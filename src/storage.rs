@@ -1,21 +1,14 @@
-use crate::address::BluetoothAddress;
+use crate::{address::BluetoothAddress, paths::TrackerPaths};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    env,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 pub const SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrackerPaths {
-    pub log_path: PathBuf,
-    pub state_path: PathBuf,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveState {
@@ -52,34 +45,6 @@ pub enum ConnectOutcome {
 pub enum DisconnectOutcome {
     Closed(SpanRecord),
     NoActiveSpan,
-}
-
-impl TrackerPaths {
-    pub fn from_overrides(log_path: Option<PathBuf>, state_path: Option<PathBuf>) -> Result<Self> {
-        let state_dir = default_state_dir()?;
-        Ok(Self {
-            log_path: log_path.unwrap_or_else(|| state_dir.join("spans.jsonl")),
-            state_path: state_path.unwrap_or_else(|| state_dir.join("active.json")),
-        })
-    }
-}
-
-pub fn default_state_dir() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(path).join("keychron-tracker"));
-    }
-
-    let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".local/state/keychron-tracker"))
-}
-
-pub fn default_user_systemd_dir() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(path).join("systemd/user"));
-    }
-
-    let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".config/systemd/user"))
 }
 
 pub fn load_active(path: &Path) -> Result<Option<ActiveState>> {
@@ -199,36 +164,6 @@ pub fn mark_disconnected(
     Ok(DisconnectOutcome::Closed(record))
 }
 
-pub fn format_timestamp(value: OffsetDateTime) -> String {
-    let value = UtcOffset::local_offset_at(value)
-        .map(|offset| value.to_offset(offset))
-        .unwrap_or(value);
-    format_timestamp_value(value)
-}
-
-fn format_timestamp_value(value: OffsetDateTime) -> String {
-    value
-        .replace_nanosecond(0)
-        .unwrap_or(value)
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| value.unix_timestamp().to_string())
-}
-
-pub fn format_duration(total_seconds: i64) -> String {
-    let total_seconds = total_seconds.max(0);
-    let hours = total_seconds / 3600;
-    let minutes = (total_seconds % 3600) / 60;
-    let seconds = total_seconds % 60;
-
-    if hours > 0 {
-        format!("{hours}h {minutes}m {seconds}s")
-    } else if minutes > 0 {
-        format!("{minutes}m {seconds}s")
-    } else {
-        format!("{seconds}s")
-    }
-}
-
 fn append_span(path: &Path, record: &SpanRecord) -> Result<()> {
     let mut file = OpenOptions::new()
         .create(true)
@@ -259,6 +194,7 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::TrackerPaths;
     use tempfile::TempDir;
     use time::macros::datetime;
 
@@ -314,21 +250,6 @@ mod tests {
         assert!(load_active(&paths.state_path)?.is_none());
         assert_eq!(load_spans(&paths.log_path)?, vec![record]);
         Ok(())
-    }
-
-    #[test]
-    fn format_timestamp_omits_subsecond_precision() {
-        let timestamp = datetime!(2026-06-28 12:00:01.123456789 UTC);
-        assert!(!format_timestamp(timestamp).contains('.'));
-    }
-
-    #[test]
-    fn format_timestamp_value_uses_offset_in_display_value() {
-        let timestamp = datetime!(2026-06-28 12:00:01.123456789 -4);
-        assert_eq!(
-            format_timestamp_value(timestamp),
-            "2026-06-28T12:00:01-04:00"
-        );
     }
 
     #[test]

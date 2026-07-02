@@ -1,10 +1,9 @@
 use crate::{
     address::BluetoothAddress,
     bluez::{self, DeviceInfo, DEVICE_INTERFACE},
-    storage::{
-        format_duration, format_timestamp, load_active, mark_connected, mark_disconnected,
-        ConnectOutcome, DisconnectOutcome, TrackerPaths,
-    },
+    display::{format_duration, format_timestamp},
+    paths::TrackerPaths,
+    storage::{load_active, mark_connected, mark_disconnected, ConnectOutcome, DisconnectOutcome},
 };
 use ::time::OffsetDateTime;
 use anyhow::{Context, Result};

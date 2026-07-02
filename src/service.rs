@@ -1,6 +1,6 @@
 use crate::{
     address::BluetoothAddress,
-    storage::{default_user_systemd_dir, TrackerPaths},
+    paths::{default_user_systemd_dir, TrackerPaths},
 };
 use anyhow::{anyhow, Context, Result};
 use std::{env, ffi::OsStr, fs, path::Path, process::Command};

@@ -1,4 +1,8 @@
-use crate::storage::{format_duration, format_timestamp, load_spans, TrackerPaths};
+use crate::{
+    display::{format_duration, format_timestamp},
+    paths::TrackerPaths,
+    storage::load_spans,
+};
 use anyhow::Result;
 
 pub fn print_report(paths: &TrackerPaths) -> Result<()> {

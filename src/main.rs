@@ -1,6 +1,8 @@
 mod address;
 mod bluez;
 mod cli;
+mod display;
+mod paths;
 mod report;
 mod service;
 mod storage;
@@ -9,7 +11,7 @@ mod tracking;
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands, ServiceCommands};
-use storage::TrackerPaths;
+use paths::TrackerPaths;
 
 #[tokio::main]
 async fn main() -> Result<()> {
