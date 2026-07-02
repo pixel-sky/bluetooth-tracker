@@ -10,16 +10,9 @@ pub fn print_report(paths: &TrackerPaths) -> Result<()> {
     let observed_at = OffsetDateTime::now_utc();
     let active = load_active(&paths.state_path)?;
     let spans = load_spans(&paths.log_path)?;
-    let completed_seconds: i64 = spans.iter().map(|span| span.duration_seconds).sum();
-    let active_seconds = active
-        .as_ref()
-        .map(|active| active_elapsed_seconds(active, observed_at))
-        .unwrap_or(0);
-    let total_seconds = completed_seconds + active_seconds;
 
     println!("Log: {}", paths.log_path.display());
     println!("Spans: {}", spans.len());
-    println!("Total connected time: {}", format_duration(total_seconds));
 
     if let Some(active) = active.as_ref() {
         println!();
@@ -58,7 +51,7 @@ pub fn print_report(paths: &TrackerPaths) -> Result<()> {
 }
 
 fn current_span_lines(active: &ActiveState, observed_at: OffsetDateTime) -> Vec<String> {
-    let elapsed = active_elapsed_seconds(active, observed_at);
+    let elapsed = (observed_at - active.started_at).whole_seconds().max(0);
     let mut lines = vec![
         "Current span:".to_owned(),
         format!(
@@ -70,10 +63,6 @@ fn current_span_lines(active: &ActiveState, observed_at: OffsetDateTime) -> Vec<
     push_note_line(&mut lines, "start", active.start_note.as_deref());
     push_note_line(&mut lines, "end", active.end_note.as_deref());
     lines
-}
-
-fn active_elapsed_seconds(active: &ActiveState, observed_at: OffsetDateTime) -> i64 {
-    (observed_at - active.started_at).whole_seconds().max(0)
 }
 
 fn print_note(label: &str, note: Option<&str>) {
