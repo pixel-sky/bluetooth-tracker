@@ -35,7 +35,15 @@ pub fn print_report(paths: &TrackerPaths) -> Result<()> {
             format_duration(span.duration_seconds),
             marker
         );
+        print_note("start", span.start_note.as_deref());
+        print_note("end", span.end_note.as_deref());
     }
 
     Ok(())
+}
+
+fn print_note(label: &str, note: Option<&str>) {
+    if let Some(note) = note {
+        println!("  {label}: {note}");
+    }
 }

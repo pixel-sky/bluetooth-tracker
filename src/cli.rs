@@ -32,9 +32,27 @@ pub enum Commands {
 
     Report,
 
+    Note {
+        #[command(subcommand)]
+        command: NoteCommands,
+    },
+
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NoteCommands {
+    Start {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+
+    End {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
     },
 }
 

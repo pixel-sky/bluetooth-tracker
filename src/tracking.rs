@@ -161,6 +161,12 @@ pub async fn status(paths: TrackerPaths, address: BluetoothAddress) -> Result<()
             println!("Active span: yes");
             println!("Started: {}", format_timestamp(active.started_at));
             println!("Elapsed: {}", format_duration(elapsed));
+            if let Some(note) = active.start_note.as_deref() {
+                println!("Start note: {note}");
+            }
+            if let Some(note) = active.end_note.as_deref() {
+                println!("End note: {note}");
+            }
         }
         Some(active) => {
             println!("Active span: no");

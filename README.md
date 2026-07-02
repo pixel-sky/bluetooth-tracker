@@ -30,12 +30,17 @@ keychron-tracker discover
 keychron-tracker status --address AA:BB:CC:DD:EE:FF
 keychron-tracker watch --address AA:BB:CC:DD:EE:FF
 keychron-tracker report
+keychron-tracker note start focused writing
+keychron-tracker note end coffee break
 keychron-tracker service install --address AA:BB:CC:DD:EE:FF
 keychron-tracker service uninstall
 ```
 
 `watch` is the long-running command used by the user-level systemd service. It listens
 for BlueZ `org.bluez.Device1.Connected` changes through D-Bus.
+
+`note start` and `note end` add short notes to the active span when one exists, or
+to the latest completed span otherwise.
 
 System sleep, suspend, and hibernate are treated as keyboard disconnect periods. When
 systemd-logind emits `PrepareForSleep(true)`, the tracker closes any active span at
