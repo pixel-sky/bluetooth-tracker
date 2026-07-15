@@ -8,8 +8,17 @@ pub struct BluetoothAddress(String);
 pub struct AddressParseError;
 
 impl BluetoothAddress {
-    pub fn new(address: impl AsRef<str>) -> Self {
+    pub fn new_unchecked(address: impl AsRef<str>) -> Self {
         Self(normalize_address(address.as_ref()))
+    }
+
+    fn parse(address: impl AsRef<str>) -> Result<Self, AddressParseError> {
+        let address = normalize_address(address.as_ref());
+        if is_valid_address(&address) {
+            Ok(Self(address))
+        } else {
+            Err(AddressParseError)
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -35,19 +44,7 @@ impl FromStr for BluetoothAddress {
     type Err = AddressParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self::new(value))
-    }
-}
-
-impl From<&str> for BluetoothAddress {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<String> for BluetoothAddress {
-    fn from(value: String) -> Self {
-        Self::new(value)
+        Self::parse(value)
     }
 }
 
@@ -65,12 +62,15 @@ impl<'de> Deserialize<'de> for BluetoothAddress {
     where
         D: Deserializer<'de>,
     {
-        String::deserialize(deserializer).map(Self::new)
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
-fn normalize_address(address: &str) -> String {
+fn normalize_address(address: impl AsRef<str>) -> String {
     address
+        .as_ref()
         .trim()
         .replace(['-', '_'], ":")
         .split(':')
@@ -80,23 +80,39 @@ fn normalize_address(address: &str) -> String {
         .join(":")
 }
 
+fn is_valid_address(address: impl AsRef<str>) -> bool {
+    let parts = address.as_ref().split(':').collect::<Vec<_>>();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_common_separators() {
+    fn new_unchecked_normalizes_common_separators() {
         assert_eq!(
-            BluetoothAddress::new("aa:bb:cc:dd:ee:ff").as_str(),
+            BluetoothAddress::new_unchecked("aa:bb:cc:dd:ee:ff").as_str(),
             "AA:BB:CC:DD:EE:FF"
         );
         assert_eq!(
-            BluetoothAddress::new("aa-bb-cc-dd-ee-ff").as_str(),
+            BluetoothAddress::new_unchecked("aa-bb-cc-dd-ee-ff").as_str(),
             "AA:BB:CC:DD:EE:FF"
         );
         assert_eq!(
-            BluetoothAddress::new("aa_bb_cc_dd_ee_ff").as_str(),
+            BluetoothAddress::new_unchecked("aa_bb_cc_dd_ee_ff").as_str(),
             "AA:BB:CC:DD:EE:FF"
+        );
+    }
+
+    #[test]
+    fn new_unchecked_does_not_validate() {
+        assert_eq!(
+            BluetoothAddress::new_unchecked("not-an-address").as_str(),
+            "NOT:AN:ADDRESS"
         );
     }
 
@@ -108,5 +124,12 @@ mod tests {
             serde_json::to_string(&address).unwrap(),
             "\"AA:BB:CC:DD:EE:FF\""
         );
+    }
+
+    #[test]
+    fn rejects_invalid_addresses_when_parsing_user_input() {
+        assert!("not-an-address".parse::<BluetoothAddress>().is_err());
+        assert!("AA:BB:CC:DD:EE".parse::<BluetoothAddress>().is_err());
+        assert!("AA:BB:CC:DD:EE:GG".parse::<BluetoothAddress>().is_err());
     }
 }

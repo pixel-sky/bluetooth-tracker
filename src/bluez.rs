@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use zbus::{
+    Connection,
     fdo::ObjectManagerProxy,
     names::OwnedInterfaceName,
     zvariant::{OwnedObjectPath, OwnedValue},
-    Connection,
 };
 
 use crate::address::BluetoothAddress;
@@ -62,17 +62,6 @@ pub async fn list_devices(connection: &Connection) -> Result<Vec<DeviceInfo>> {
     Ok(devices)
 }
 
-pub async fn find_device(
-    connection: &Connection,
-    address: &BluetoothAddress,
-) -> Result<DeviceInfo> {
-    list_devices(connection)
-        .await?
-        .into_iter()
-        .find(|device| device.address == *address)
-        .ok_or_else(|| anyhow!("Bluetooth device {address} was not found in BlueZ"))
-}
-
 fn device_from_interfaces(
     path: OwnedObjectPath,
     mut interfaces: InterfaceProperties,
@@ -85,20 +74,26 @@ fn device_from_interfaces(
 
     Some(DeviceInfo {
         path: path.to_string(),
-        address: BluetoothAddress::new(address),
+        address: BluetoothAddress::new_unchecked(address),
         name: alias.or(name),
         connected,
     })
 }
 
-pub fn bool_property(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<bool> {
+pub fn bool_property(
+    properties: &HashMap<String, OwnedValue>,
+    name: impl AsRef<str>,
+) -> Option<bool> {
     properties
-        .get(name)
+        .get(name.as_ref())
         .and_then(|value| bool::try_from(value.clone()).ok())
 }
 
-pub fn string_property(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<String> {
+pub fn string_property(
+    properties: &HashMap<String, OwnedValue>,
+    name: impl AsRef<str>,
+) -> Option<String> {
     properties
-        .get(name)
+        .get(name.as_ref())
         .and_then(|value| String::try_from(value.clone()).ok())
 }

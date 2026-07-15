@@ -1,4 +1,4 @@
-use time::{format_description::FormatItem, macros::format_description, OffsetDateTime, UtcOffset};
+use time::{OffsetDateTime, UtcOffset, format_description::FormatItem, macros::format_description};
 
 const DISPLAY_TIMESTAMP_FORMAT: &[FormatItem<'_>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");

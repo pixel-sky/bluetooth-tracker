@@ -4,13 +4,10 @@ use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "keychron-tracker")]
-#[command(about = "Track Bluetooth connection spans for a Keychron keyboard")]
+#[command(about = "Track Bluetooth connection spans for configured devices")]
 pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
-    pub log: Option<PathBuf>,
-
-    #[arg(long, global = true, value_name = "PATH")]
-    pub state: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -21,16 +18,19 @@ pub enum Commands {
     Discover,
 
     Watch {
-        #[arg(long)]
-        address: BluetoothAddress,
+        #[arg(long, required = true)]
+        address: Vec<BluetoothAddress>,
     },
 
     Status {
         #[arg(long)]
-        address: BluetoothAddress,
+        address: Vec<BluetoothAddress>,
     },
 
-    Report,
+    Report {
+        #[arg(long)]
+        address: Vec<BluetoothAddress>,
+    },
 
     Note {
         #[command(subcommand)]
@@ -46,11 +46,17 @@ pub enum Commands {
 #[derive(Debug, Subcommand)]
 pub enum NoteCommands {
     Start {
+        #[arg(long)]
+        address: Option<BluetoothAddress>,
+
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
 
     End {
+        #[arg(long)]
+        address: Option<BluetoothAddress>,
+
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -59,8 +65,8 @@ pub enum NoteCommands {
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommands {
     Install {
-        #[arg(long)]
-        address: BluetoothAddress,
+        #[arg(long, required = true)]
+        address: Vec<BluetoothAddress>,
     },
 
     Uninstall,

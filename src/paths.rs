@@ -1,19 +1,35 @@
-use anyhow::{anyhow, Result};
-use std::{env, path::PathBuf};
+use anyhow::{Result, anyhow};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackerPaths {
-    pub log_path: PathBuf,
-    pub state_path: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl TrackerPaths {
-    pub fn from_overrides(log_path: Option<PathBuf>, state_path: Option<PathBuf>) -> Result<Self> {
-        let state_dir = default_state_dir()?;
-        Ok(Self {
-            log_path: log_path.unwrap_or_else(|| state_dir.join("spans.jsonl")),
-            state_path: state_path.unwrap_or_else(|| state_dir.join("active.json")),
-        })
+    pub fn new(state_dir: impl AsRef<Path>) -> Self {
+        Self {
+            state_dir: state_dir.as_ref().to_owned(),
+        }
+    }
+
+    pub fn from_default_state_dir() -> Result<Self> {
+        Ok(Self::new(default_state_dir()?))
+    }
+
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
+    pub fn spans_path(&self) -> PathBuf {
+        self.state_dir.join("spans.jsonl")
+    }
+
+    pub fn actives_path(&self) -> PathBuf {
+        self.state_dir.join("active.jsonl")
     }
 }
 
@@ -33,4 +49,25 @@ pub fn default_user_systemd_dir() -> Result<PathBuf> {
 
     let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
     Ok(PathBuf::from(home).join(".config/systemd/user"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracker_paths_use_fixed_filenames_in_one_directory() {
+        let paths = TrackerPaths::new("/tmp/keychron state");
+
+        assert_eq!(paths.state_dir(), Path::new("/tmp/keychron state"));
+        assert_eq!(
+            paths.spans_path(),
+            Path::new("/tmp/keychron state/spans.jsonl")
+        );
+        assert_eq!(
+            paths.actives_path(),
+            Path::new("/tmp/keychron state/active.jsonl")
+        );
+        assert_eq!(paths.spans_path().parent(), paths.actives_path().parent());
+    }
 }

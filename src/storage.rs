@@ -1,12 +1,15 @@
-use crate::{address::BluetoothAddress, paths::TrackerPaths};
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
+use crate::{
+    address::BluetoothAddress, bluez::DeviceInfo, paths::TrackerPaths, util::unique_addresses,
 };
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
+
+pub use crate::storage_jsonl::read_jsonl;
+use crate::{
+    storage_jsonl::{append_jsonl_unlocked, read_jsonl_unlocked, write_jsonl_unlocked},
+    storage_lock::acquire_storage_lock,
+};
 
 pub const SCHEMA_VERSION: u32 = 1;
 const MAX_NOTE_CHARS: usize = 200;
@@ -15,6 +18,7 @@ const MAX_NOTE_CHARS: usize = 200;
 pub struct ActiveState {
     pub schema_version: u32,
     pub device_address: BluetoothAddress,
+    #[serde(default)]
     pub device_name: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
@@ -73,151 +77,142 @@ impl SpanBoundary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoteOutcome {
-    ActiveSpan,
-    LatestSpan,
+    ActiveSpan(BluetoothAddress),
+    LatestSpan(BluetoothAddress),
 }
 
-pub fn load_active(path: &Path) -> Result<Option<ActiveState>> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to parse active state {}", path.display()))
-            .map(Some),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
-
-pub fn load_spans(path: &Path) -> Result<Vec<SpanRecord>> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err).with_context(|| format!("failed to open {}", path.display())),
-    };
-
-    let mut spans = Vec::new();
-    for (line_number, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| {
-            format!(
-                "failed to read line {} from {}",
-                line_number + 1,
-                path.display()
-            )
-        })?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let span = serde_json::from_str(&line).with_context(|| {
-            format!(
-                "failed to parse line {} from {}",
-                line_number + 1,
-                path.display()
-            )
-        })?;
-        spans.push(span);
-    }
-    Ok(spans)
+pub fn known_device_addresses(paths: &TrackerPaths) -> Result<Vec<BluetoothAddress>> {
+    let mut addresses = read_jsonl::<ActiveState>(paths.actives_path())?
+        .into_iter()
+        .map(|active| active.device_address)
+        .collect::<Vec<_>>();
+    addresses.extend(
+        read_jsonl::<SpanRecord>(paths.spans_path())?
+            .into_iter()
+            .map(|span| span.device_address),
+    );
+    Ok(unique_addresses(addresses))
 }
 
 pub fn mark_connected(
     paths: &TrackerPaths,
-    address: &BluetoothAddress,
-    name: Option<&str>,
+    device: &DeviceInfo,
     started_at: OffsetDateTime,
-    source: &str,
+    source: impl AsRef<str>,
 ) -> Result<ConnectOutcome> {
-    if let Some(active) = load_active(&paths.state_path)? {
-        if active.device_address != *address {
-            return Err(anyhow!(
-                "active state is for {}, but observed connect is for {}",
-                active.device_address,
-                address
-            ));
-        }
+    let actives_path = paths.actives_path();
+    let _lock = acquire_storage_lock(paths.state_dir())?;
+    let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
+    if actives
+        .iter()
+        .any(|active| active.device_address == device.address)
+    {
         return Ok(ConnectOutcome::AlreadyActive);
     }
 
-    let active = ActiveState {
+    actives.push(ActiveState {
         schema_version: SCHEMA_VERSION,
-        device_address: address.clone(),
-        device_name: name.map(ToOwned::to_owned),
+        device_address: device.address.clone(),
+        device_name: device.name.clone(),
         started_at,
-        start_source: source.to_owned(),
+        start_source: source.as_ref().to_owned(),
         start_note: None,
         end_note: None,
-    };
-    write_json_file(&paths.state_path, &active)?;
+    });
+
+    write_jsonl_unlocked(actives_path, actives)?;
+
     Ok(ConnectOutcome::Started)
 }
 
 pub fn mark_disconnected(
     paths: &TrackerPaths,
-    address: &BluetoothAddress,
-    name: Option<&str>,
+    device: &DeviceInfo,
     ended_at: OffsetDateTime,
-    source: &str,
+    source: impl AsRef<str>,
     end_uncertain: bool,
 ) -> Result<DisconnectOutcome> {
-    let Some(active) = load_active(&paths.state_path)? else {
+    let actives_path = paths.actives_path();
+    let spans_path = paths.spans_path();
+    let _lock = acquire_storage_lock(paths.state_dir())?;
+    let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
+
+    let Some(index) = actives
+        .iter()
+        .position(|active| active.device_address == device.address)
+    else {
         return Ok(DisconnectOutcome::NoActiveSpan);
     };
 
-    if active.device_address != *address {
-        return Err(anyhow!(
-            "active state is for {}, but observed disconnect is for {}",
-            active.device_address,
-            address
-        ));
-    }
+    let active = actives[index].clone();
 
     let duration_seconds = (ended_at - active.started_at).whole_seconds().max(0);
     let record = SpanRecord {
         schema_version: SCHEMA_VERSION,
-        device_address: address.clone(),
-        device_name: active.device_name.or_else(|| name.map(ToOwned::to_owned)),
+        device_address: device.address.clone(),
+        device_name: device.name.clone().or(active.device_name),
         started_at: active.started_at,
         ended_at,
         duration_seconds,
         start_source: active.start_source,
-        end_source: source.to_owned(),
+        end_source: source.as_ref().to_owned(),
         end_uncertain,
         start_note: active.start_note,
         end_note: active.end_note,
     };
 
-    ensure_parent_dir(&paths.log_path)?;
-    append_span(&paths.log_path, &record)?;
-    match fs::remove_file(&paths.state_path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(err)
-                .with_context(|| format!("failed to remove {}", paths.state_path.display()))
-        }
-    }
+    append_jsonl_unlocked(spans_path, &record, "span")?;
+    actives.remove(index);
+    write_jsonl_unlocked(actives_path, actives)?;
 
     Ok(DisconnectOutcome::Closed(record))
 }
 
 pub fn set_span_note(
     paths: &TrackerPaths,
+    address: Option<&BluetoothAddress>,
     boundary: SpanBoundary,
-    note: &str,
+    note: impl AsRef<str>,
 ) -> Result<NoteOutcome> {
     let note = normalize_note(note)?;
+    let actives_path = paths.actives_path();
+    let spans_path = paths.spans_path();
+    let _lock = acquire_storage_lock(paths.state_dir())?;
 
-    if let Some(mut active) = load_active(&paths.state_path)? {
+    let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
+    if let Some(active) = match address {
+        Some(addr) => actives
+            .iter_mut()
+            .rev()
+            .find(|active| active.device_address == *addr),
+        None => actives.last_mut(),
+    } {
+        let address = active.device_address.clone();
         set_note_field(&mut active.start_note, &mut active.end_note, boundary, note);
-        write_json_file(&paths.state_path, &active)?;
-        return Ok(NoteOutcome::ActiveSpan);
+        write_jsonl_unlocked(actives_path, actives)?;
+        return Ok(NoteOutcome::ActiveSpan(address));
     }
 
-    let mut spans = load_spans(&paths.log_path)?;
-    let Some(span) = spans.last_mut() else {
-        return Err(anyhow!("no active or completed spans to annotate"));
-    };
-    set_note_field(&mut span.start_note, &mut span.end_note, boundary, note);
-    write_spans(&paths.log_path, &spans)?;
-    Ok(NoteOutcome::LatestSpan)
+    let mut spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
+    if let Some(span) = match address {
+        Some(addr) => spans
+            .iter_mut()
+            .rev()
+            .find(|span| span.device_address == *addr),
+        None => spans.last_mut(),
+    } {
+        let address = span.device_address.clone();
+        set_note_field(&mut span.start_note, &mut span.end_note, boundary, note);
+        write_jsonl_unlocked(spans_path, &spans)?;
+        return Ok(NoteOutcome::LatestSpan(address));
+    }
+
+    match address {
+        Some(address) => Err(anyhow!(
+            "no active or completed spans for {address} to annotate"
+        )),
+        None => Err(anyhow!("no active or completed spans to annotate")),
+    }
 }
 
 fn set_note_field(
@@ -232,8 +227,12 @@ fn set_note_field(
     }
 }
 
-fn normalize_note(note: &str) -> Result<String> {
-    let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+fn normalize_note(note: impl AsRef<str>) -> Result<String> {
+    let note = note
+        .as_ref()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if note.is_empty() {
         return Err(anyhow!("note cannot be empty"));
     }
@@ -241,66 +240,6 @@ fn normalize_note(note: &str) -> Result<String> {
         return Err(anyhow!("note must be {MAX_NOTE_CHARS} characters or fewer"));
     }
     Ok(note)
-}
-
-fn append_span(path: &Path, record: &SpanRecord) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::to_writer(&mut file, record)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.write_all(b"\n")
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
-}
-
-fn write_spans(path: &Path, spans: &[SpanRecord]) -> Result<()> {
-    ensure_parent_dir(path)?;
-
-    let temp_path = rewrite_temp_path(path);
-    {
-        let mut file = File::create(&temp_path)
-            .with_context(|| format!("failed to open {}", temp_path.display()))?;
-        for span in spans {
-            serde_json::to_writer(&mut file, span)
-                .with_context(|| format!("failed to write {}", temp_path.display()))?;
-            file.write_all(b"\n")
-                .with_context(|| format!("failed to write {}", temp_path.display()))?;
-        }
-    }
-
-    fs::rename(&temp_path, path).with_context(|| {
-        format!(
-            "failed to replace {} with {}",
-            path.display(),
-            temp_path.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn rewrite_temp_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy())
-        .unwrap_or_else(|| "spans.jsonl".into());
-    path.with_file_name(format!(".{file_name}.tmp"))
-}
-
-fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    ensure_parent_dir(path)?;
-    let bytes = serde_json::to_vec_pretty(value)?;
-    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -311,9 +250,16 @@ mod tests {
     use time::macros::datetime;
 
     fn paths(temp: &TempDir) -> TrackerPaths {
-        TrackerPaths {
-            log_path: temp.path().join("spans.jsonl"),
-            state_path: temp.path().join("active.json"),
+        TrackerPaths::new(temp.path())
+    }
+
+    fn device(address: impl AsRef<str>, name: Option<String>) -> DeviceInfo {
+        let address = BluetoothAddress::new_unchecked(address);
+        DeviceInfo {
+            path: format!("/org/bluez/hci0/dev_{}", address.as_str().replace(':', "_")),
+            address,
+            name,
+            connected: true,
         }
     }
 
@@ -321,46 +267,58 @@ mod tests {
     fn connected_then_disconnected_writes_one_span() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
-        let address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
+        let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
         let started_at = datetime!(2026-06-28 12:00 UTC);
         let ended_at = datetime!(2026-06-28 12:10 UTC);
 
         assert_eq!(
-            mark_connected(
-                &paths,
-                &address,
-                Some("Keychron K3"),
-                started_at,
-                "test-connect"
-            )?,
+            mark_connected(&paths, &device, started_at, "test-connect")?,
             ConnectOutcome::Started
         );
         assert_eq!(
-            mark_connected(
-                &paths,
-                &address,
-                Some("Keychron K3"),
-                started_at,
-                "test-connect"
-            )?,
+            mark_connected(&paths, &device, started_at, "test-connect")?,
             ConnectOutcome::AlreadyActive
         );
 
-        let outcome = mark_disconnected(
-            &paths,
-            &address,
-            Some("Keychron K3"),
-            ended_at,
-            "test-disconnect",
-            false,
-        )?;
-        let DisconnectOutcome::Closed(record) = outcome else {
+        let DisconnectOutcome::Closed(record) =
+            mark_disconnected(&paths, &device, ended_at, "test-disconnect", false)?
+        else {
             panic!("expected span closure");
         };
+
         assert_eq!(record.duration_seconds, 600);
         assert!(!record.end_uncertain);
-        assert!(load_active(&paths.state_path)?.is_none());
-        assert_eq!(load_spans(&paths.log_path)?, vec![record]);
+        assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
+        assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        Ok(())
+    }
+
+    #[test]
+    fn active_state_is_written_as_jsonl_entries() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
+
+        mark_connected(
+            &paths,
+            &device,
+            datetime!(2026-06-28 12:00 UTC),
+            "test-connect",
+        )?;
+        set_span_note(
+            &paths,
+            Some(&device.address),
+            SpanBoundary::Start,
+            "focused writing",
+        )?;
+
+        let contents = std::fs::read_to_string(paths.actives_path())?;
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+
+        let active: ActiveState = serde_json::from_str(lines[0])?;
+        assert_eq!(active.device_address, device.address);
+        assert_eq!(active.start_note.as_deref(), Some("focused writing"));
         Ok(())
     }
 
@@ -368,37 +326,41 @@ mod tests {
     fn active_span_notes_are_carried_to_closed_span() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
-        let address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
+        let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
 
         mark_connected(
             &paths,
-            &address,
-            Some("Keychron K3"),
+            &device,
             datetime!(2026-06-28 12:00 UTC),
             "test-connect",
         )?;
         assert_eq!(
-            set_span_note(&paths, SpanBoundary::Start, "  focused   writing  ")?,
-            NoteOutcome::ActiveSpan
+            set_span_note(
+                &paths,
+                Some(&device.address),
+                SpanBoundary::Start,
+                "  focused   writing  "
+            )?,
+            NoteOutcome::ActiveSpan(device.address.clone())
         );
         assert_eq!(
-            set_span_note(&paths, SpanBoundary::End, "wrapped up")?,
-            NoteOutcome::ActiveSpan
+            set_span_note(
+                &paths,
+                Some(&device.address),
+                SpanBoundary::End,
+                "wrapped up"
+            )?,
+            NoteOutcome::ActiveSpan(device.address.clone())
         );
-
-        let active = load_active(&paths.state_path)?.expect("active state");
-        assert_eq!(active.start_note.as_deref(), Some("focused writing"));
-        assert_eq!(active.end_note.as_deref(), Some("wrapped up"));
 
         mark_disconnected(
             &paths,
-            &address,
-            Some("Keychron K3"),
+            &device,
             datetime!(2026-06-28 12:10 UTC),
             "test-disconnect",
             false,
         )?;
-        let spans = load_spans(&paths.log_path)?;
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans[0].start_note.as_deref(), Some("focused writing"));
         assert_eq!(spans[0].end_note.as_deref(), Some("wrapped up"));
         Ok(())
@@ -408,30 +370,266 @@ mod tests {
     fn note_without_active_span_updates_latest_completed_span() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
-        let address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
+        let device = device("aa:bb:cc:dd:ee:ff", None);
 
         mark_connected(
             &paths,
-            &address,
-            None,
+            &device,
             datetime!(2026-06-28 12:00 UTC),
             "test-connect",
         )?;
         mark_disconnected(
             &paths,
-            &address,
-            None,
+            &device,
             datetime!(2026-06-28 12:10 UTC),
             "test-disconnect",
             false,
         )?;
 
         assert_eq!(
-            set_span_note(&paths, SpanBoundary::End, "coffee break")?,
-            NoteOutcome::LatestSpan
+            set_span_note(
+                &paths,
+                Some(&device.address),
+                SpanBoundary::End,
+                "coffee break"
+            )?,
+            NoteOutcome::LatestSpan(device.address.clone())
         );
-        let spans = load_spans(&paths.log_path)?;
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans[0].end_note.as_deref(), Some("coffee break"));
+        Ok(())
+    }
+
+    #[test]
+    fn note_without_address_uses_latest_available_span() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", None);
+
+        mark_connected(
+            &paths,
+            &device,
+            datetime!(2026-06-28 12:00 UTC),
+            "test-connect",
+        )?;
+        assert_eq!(
+            set_span_note(&paths, None, SpanBoundary::Start, "active note")?,
+            NoteOutcome::ActiveSpan(device.address.clone())
+        );
+        mark_disconnected(
+            &paths,
+            &device,
+            datetime!(2026-06-28 12:10 UTC),
+            "test-disconnect",
+            false,
+        )?;
+        assert_eq!(
+            set_span_note(&paths, None, SpanBoundary::End, "completed note")?,
+            NoteOutcome::LatestSpan(device.address.clone())
+        );
+
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+        assert_eq!(spans[0].start_note.as_deref(), Some("active note"));
+        assert_eq!(spans[0].end_note.as_deref(), Some("completed note"));
+        Ok(())
+    }
+
+    #[test]
+    fn addressed_note_missing_active_span_does_not_update_latest_active() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let first = device("aa:bb:cc:dd:ee:ff", None);
+        let second = device("11:22:33:44:55:66", None);
+        let missing = BluetoothAddress::new_unchecked("77:88:99:AA:BB:CC");
+
+        mark_connected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:00 UTC),
+            "first-connect",
+        )?;
+        mark_connected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:01 UTC),
+            "second-connect",
+        )?;
+
+        assert!(set_span_note(&paths, Some(&missing), SpanBoundary::Start, "wrong").is_err());
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert!(actives.iter().all(|active| active.start_note.is_none()));
+        assert!(actives.iter().all(|active| active.end_note.is_none()));
+        Ok(())
+    }
+
+    #[test]
+    fn addressed_note_missing_completed_span_does_not_update_latest_completed() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let first = device("aa:bb:cc:dd:ee:ff", None);
+        let second = device("11:22:33:44:55:66", None);
+        let missing = BluetoothAddress::new_unchecked("77:88:99:AA:BB:CC");
+
+        mark_connected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:00 UTC),
+            "first-connect",
+        )?;
+        mark_disconnected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:10 UTC),
+            "first-disconnect",
+            false,
+        )?;
+        mark_connected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:20 UTC),
+            "second-connect",
+        )?;
+        mark_disconnected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:30 UTC),
+            "second-disconnect",
+            false,
+        )?;
+
+        assert!(set_span_note(&paths, Some(&missing), SpanBoundary::End, "wrong").is_err());
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+        assert!(spans.iter().all(|span| span.start_note.is_none()));
+        assert!(spans.iter().all(|span| span.end_note.is_none()));
+        Ok(())
+    }
+
+    #[test]
+    fn disconnected_without_active_span_is_noop() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", None);
+
+        assert_eq!(
+            mark_disconnected(
+                &paths,
+                &device,
+                datetime!(2026-06-28 12:10 UTC),
+                "test-disconnect",
+                false,
+            )?,
+            DisconnectOutcome::NoActiveSpan
+        );
+        assert!(read_jsonl::<SpanRecord>(paths.spans_path())?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_restart_closure_is_marked() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", None);
+
+        mark_connected(
+            &paths,
+            &device,
+            datetime!(2026-06-28 12:00 UTC),
+            "startup-connected",
+        )?;
+        let DisconnectOutcome::Closed(record) = mark_disconnected(
+            &paths,
+            &device,
+            datetime!(2026-06-28 12:01 UTC),
+            "startup-disconnected",
+            true,
+        )?
+        else {
+            panic!("expected span closure");
+        };
+
+        assert!(record.end_uncertain);
+        assert_eq!(record.duration_seconds, 60);
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_devices_can_be_active_simultaneously() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let first = device("aa:bb:cc:dd:ee:ff", None);
+        let second = device("11:22:33:44:55:66", None);
+
+        mark_connected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:00 UTC),
+            "first-connect",
+        )?;
+        assert_eq!(
+            mark_connected(
+                &paths,
+                &second,
+                datetime!(2026-06-28 12:01 UTC),
+                "second-connect",
+            )?,
+            ConnectOutcome::Started
+        );
+
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert!(
+            actives
+                .iter()
+                .any(|active| active.device_address == first.address)
+        );
+        assert!(
+            actives
+                .iter()
+                .any(|active| active.device_address == second.address)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disconnecting_one_device_leaves_other_device_active() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let first = device("aa:bb:cc:dd:ee:ff", None);
+        let second = device("11:22:33:44:55:66", None);
+
+        mark_connected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:00 UTC),
+            "first-connect",
+        )?;
+        mark_connected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:01 UTC),
+            "second-connect",
+        )?;
+        mark_disconnected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:10 UTC),
+            "first-disconnect",
+            false,
+        )?;
+
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert!(
+            !actives
+                .iter()
+                .any(|active| active.device_address == first.address)
+        );
+        assert!(
+            actives
+                .iter()
+                .any(|active| active.device_address == second.address)
+        );
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].device_address, first.address);
         Ok(())
     }
 
@@ -440,7 +638,7 @@ mod tests {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
         std::fs::write(
-            &paths.log_path,
+            paths.spans_path(),
             concat!(
                 r#"{"schema_version":1,"device_address":"AA:BB:CC:DD:EE:FF","#,
                 r#""device_name":"Keychron K3","started_at":"2026-06-28T12:00:00Z","#,
@@ -450,7 +648,7 @@ mod tests {
             ),
         )?;
 
-        let spans = load_spans(&paths.log_path)?;
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans.len(), 1);
         assert!(spans[0].start_note.is_none());
         assert!(spans[0].end_note.is_none());
@@ -460,83 +658,5 @@ mod tests {
     #[test]
     fn empty_note_errors() {
         assert!(normalize_note(" \n\t ").is_err());
-    }
-
-    #[test]
-    fn disconnected_without_active_span_is_noop() -> Result<()> {
-        let temp = TempDir::new()?;
-        let paths = paths(&temp);
-        let address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
-        assert_eq!(
-            mark_disconnected(
-                &paths,
-                &address,
-                None,
-                datetime!(2026-06-28 12:10 UTC),
-                "test-disconnect",
-                false,
-            )?,
-            DisconnectOutcome::NoActiveSpan
-        );
-        assert!(load_spans(&paths.log_path)?.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn uncertain_restart_closure_is_marked() -> Result<()> {
-        let temp = TempDir::new()?;
-        let paths = paths(&temp);
-        let address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
-
-        mark_connected(
-            &paths,
-            &address,
-            None,
-            datetime!(2026-06-28 12:00 UTC),
-            "startup-connected",
-        )?;
-        let outcome = mark_disconnected(
-            &paths,
-            &address,
-            None,
-            datetime!(2026-06-28 12:01 UTC),
-            "startup-disconnected",
-            true,
-        )?;
-
-        let DisconnectOutcome::Closed(record) = outcome else {
-            panic!("expected span closure");
-        };
-        assert!(record.end_uncertain);
-        assert_eq!(record.duration_seconds, 60);
-        Ok(())
-    }
-
-    #[test]
-    fn connected_with_active_state_for_other_address_errors() -> Result<()> {
-        let temp = TempDir::new()?;
-        let paths = paths(&temp);
-        let first_address = BluetoothAddress::new("aa:bb:cc:dd:ee:ff");
-        let second_address = BluetoothAddress::new("11:22:33:44:55:66");
-
-        mark_connected(
-            &paths,
-            &first_address,
-            None,
-            datetime!(2026-06-28 12:00 UTC),
-            "first-connect",
-        )?;
-
-        let err = mark_connected(
-            &paths,
-            &second_address,
-            None,
-            datetime!(2026-06-28 12:01 UTC),
-            "second-connect",
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("active state is for"));
-        Ok(())
     }
 }
