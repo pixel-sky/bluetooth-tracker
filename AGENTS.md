@@ -18,7 +18,17 @@ This repository is a Rust 2024 binary crate named `keychron-tracker`. `src/main.
 - `cargo fmt --check`: verify Rust formatting before submitting changes.
 - `cargo clippy --all-targets --all-features`: run lint checks when Clippy is installed.
 
-Runtime commands that talk to Bluetooth require Linux with BlueZ and access to the user D-Bus session.
+Runtime commands that talk to Bluetooth require Linux with BlueZ and access to the system D-Bus.
+
+## BlueZ and D-Bus Subscription Semantics
+
+These findings apply to the pinned `zbus` 5.11.0 implementation; re-check the dependency source if its version changes.
+
+- A BlueZ device disappearing or its object being removed does not end its `PropertiesChanged` stream. The D-Bus match remains registered and the Rust stream stays pending until matching messages arrive again or its underlying channel closes.
+- A BlueZ restart does not normally end the stream while the system bus remains alive. `zbus::SignalStream` follows `org.bluez` ownership changes through `NameOwnerChanged`.
+- A fatal failure of the shared system-bus connection closes all sibling signal streams. Recreate the connection or let the systemd service restart the process; subscribing again through the dead connection cannot repair it.
+- Assume this machine has one Bluetooth adapter. Keep a device's subscription while it is temporarily not visible, and reuse it when the same address reappears; its BlueZ object path is stable under this assumption. Do not create a second subscription when that address is already subscribed.
+- `SelectAll` silently removes a child after that child returns `None` and returns `None` itself only when no children remain. Do not assume it reports which child ended.
 
 ## Coding Style & Naming Conventions
 

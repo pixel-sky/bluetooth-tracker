@@ -63,7 +63,6 @@ impl WatchState {
                     let source = format!("{}-missing", source_prefix.as_ref());
                     handle_missing_device_at(paths, address, OffsetDateTime::now_utc(), &source)?;
                     self.devices.retain(|device| device.address != *address);
-                    self.subscribed_addresses.remove(address);
                     continue;
                 }
             };
