@@ -102,12 +102,18 @@ pub fn mark_connected(
 ) -> Result<ConnectOutcome> {
     let actives_path = paths.actives_path();
     let _lock = acquire_storage_lock(paths.state_dir())?;
+
     let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
-    if actives
+    if let Some(index) = actives
         .iter()
-        .any(|active| active.device_address == device.address)
+        .position(|active| active.device_address == device.address)
     {
-        return Ok(ConnectOutcome::AlreadyActive);
+        let spans = read_jsonl_unlocked::<SpanRecord>(paths.spans_path())?;
+        if completed_span_for_active(&spans, &actives[index]).is_some() {
+            actives.remove(index);
+        } else {
+            return Ok(ConnectOutcome::AlreadyActive);
+        }
     }
 
     actives.push(ActiveState {
@@ -134,6 +140,7 @@ pub fn mark_disconnected(
 ) -> Result<DisconnectOutcome> {
     let actives_path = paths.actives_path();
     let spans_path = paths.spans_path();
+
     let _lock = acquire_storage_lock(paths.state_dir())?;
     let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
 
@@ -145,6 +152,13 @@ pub fn mark_disconnected(
     };
 
     let active = actives[index].clone();
+
+    let spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
+    if let Some(record) = completed_span_for_active(&spans, &active).cloned() {
+        actives.remove(index);
+        write_jsonl_unlocked(actives_path, actives)?;
+        return Ok(DisconnectOutcome::Closed(record));
+    }
 
     let duration_seconds = (ended_at - active.started_at).whole_seconds().max(0);
     let record = SpanRecord {
@@ -166,6 +180,15 @@ pub fn mark_disconnected(
     write_jsonl_unlocked(actives_path, actives)?;
 
     Ok(DisconnectOutcome::Closed(record))
+}
+
+fn completed_span_for_active<'a>(
+    spans: &'a [SpanRecord],
+    active: &ActiveState,
+) -> Option<&'a SpanRecord> {
+    spans.iter().rev().find(|span| {
+        span.device_address == active.device_address && span.started_at == active.started_at
+    })
 }
 
 pub fn set_span_note(
@@ -263,6 +286,26 @@ mod tests {
         }
     }
 
+    fn completed_span(
+        device: &DeviceInfo,
+        started_at: OffsetDateTime,
+        ended_at: OffsetDateTime,
+    ) -> SpanRecord {
+        SpanRecord {
+            schema_version: SCHEMA_VERSION,
+            device_address: device.address.clone(),
+            device_name: device.name.clone(),
+            started_at,
+            ended_at,
+            duration_seconds: (ended_at - started_at).whole_seconds().max(0),
+            start_source: "test-connect".to_owned(),
+            end_source: "test-disconnect".to_owned(),
+            end_uncertain: false,
+            start_note: None,
+            end_note: None,
+        }
+    }
+
     #[test]
     fn connected_then_disconnected_writes_one_span() -> Result<()> {
         let temp = TempDir::new()?;
@@ -290,6 +333,93 @@ mod tests {
         assert!(!record.end_uncertain);
         assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
         assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_disconnect_retry_removes_active_without_duplicate_span() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
+        let started_at = datetime!(2026-06-28 12:00 UTC);
+        let record = completed_span(&device, started_at, datetime!(2026-06-28 12:10 UTC));
+
+        mark_connected(&paths, &device, started_at, "test-connect")?;
+        append_jsonl_unlocked(paths.spans_path(), &record, "span")?;
+
+        assert_eq!(
+            mark_disconnected(
+                &paths,
+                &device,
+                datetime!(2026-06-28 12:11 UTC),
+                "retry-disconnect",
+                true,
+            )?,
+            DisconnectOutcome::Closed(record.clone())
+        );
+        assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
+        assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        Ok(())
+    }
+
+    #[test]
+    fn connected_startup_recovers_interrupted_close_and_starts_new_span() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
+        let stale_started_at = datetime!(2026-06-28 12:00 UTC);
+        let record = completed_span(&device, stale_started_at, datetime!(2026-06-28 12:10 UTC));
+        let new_started_at = datetime!(2026-06-28 12:20 UTC);
+
+        mark_connected(&paths, &device, stale_started_at, "test-connect")?;
+        append_jsonl_unlocked(paths.spans_path(), &record, "span")?;
+
+        assert_eq!(
+            mark_connected(&paths, &device, new_started_at, "startup-connected")?,
+            ConnectOutcome::Started
+        );
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert_eq!(actives.len(), 1);
+        assert_eq!(actives[0].device_address, device.address);
+        assert_eq!(actives[0].started_at, new_started_at);
+        assert_eq!(actives[0].start_source, "startup-connected");
+        assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_close_matching_uses_address_and_start_timestamp() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let tracked_device = device("aa:bb:cc:dd:ee:ff", None);
+        let other_device = device("11:22:33:44:55:66", None);
+        let started_at = datetime!(2026-06-28 12:00 UTC);
+        let wrong_address =
+            completed_span(&other_device, started_at, datetime!(2026-06-28 12:05 UTC));
+        let wrong_start = completed_span(
+            &tracked_device,
+            datetime!(2026-06-28 11:00 UTC),
+            datetime!(2026-06-28 11:05 UTC),
+        );
+
+        mark_connected(&paths, &tracked_device, started_at, "test-connect")?;
+        write_jsonl_unlocked(paths.spans_path(), [&wrong_address, &wrong_start])?;
+
+        let DisconnectOutcome::Closed(record) = mark_disconnected(
+            &paths,
+            &tracked_device,
+            datetime!(2026-06-28 12:10 UTC),
+            "test-disconnect",
+            false,
+        )?
+        else {
+            panic!("expected span closure");
+        };
+
+        assert_eq!(record.device_address, tracked_device.address);
+        assert_eq!(record.started_at, started_at);
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+        assert_eq!(spans, vec![wrong_address, wrong_start, record]);
         Ok(())
     }
 
