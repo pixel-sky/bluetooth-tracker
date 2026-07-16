@@ -117,7 +117,8 @@ fn systemd_arg(value: impl AsRef<OsStr>) -> String {
     let escaped = value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('$', "$$");
+        .replace('$', "$$")
+        .replace('%', "%%");
     format!("\"{escaped}\"")
 }
 
@@ -157,5 +158,15 @@ mod tests {
             "--state-dir {} watch",
             systemd_arg(state_dir.as_os_str())
         )));
+    }
+
+    #[test]
+    fn rendered_unit_escapes_percent_in_paths() {
+        let paths = TrackerPaths::new("/tmp/keychron%state");
+        let unit = render_unit(Path::new("/tmp/keychron%tracker"), [], &paths).unwrap();
+
+        assert!(unit.contains(
+            "ExecStart=\"/tmp/keychron%%tracker\" --state-dir \"/tmp/keychron%%state\" watch"
+        ));
     }
 }
