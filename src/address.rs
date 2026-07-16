@@ -74,7 +74,6 @@ fn normalize_address(address: impl AsRef<str>) -> String {
         .trim()
         .replace(['-', '_'], ":")
         .split(':')
-        .filter(|part| !part.is_empty())
         .map(|part| part.to_ascii_uppercase())
         .collect::<Vec<_>>()
         .join(":")
@@ -131,5 +130,7 @@ mod tests {
         assert!("not-an-address".parse::<BluetoothAddress>().is_err());
         assert!("AA:BB:CC:DD:EE".parse::<BluetoothAddress>().is_err());
         assert!("AA:BB:CC:DD:EE:GG".parse::<BluetoothAddress>().is_err());
+        assert!("AA::BB:CC:DD:EE:FF".parse::<BluetoothAddress>().is_err());
+        assert!("AA--BB-CC-DD-EE-FF".parse::<BluetoothAddress>().is_err());
     }
 }
