@@ -73,12 +73,27 @@ impl WatchState {
                 }
             };
 
-            sync_current_state(paths, device, source_prefix.as_ref()).with_context(|| {
-                format!(
-                    "failed to sync state for {} ({})",
-                    device.address, device.path
+            {
+                let source = if device.connected {
+                    format!("{}-connected", source_prefix.as_ref())
+                } else {
+                    format!("{}-disconnected", source_prefix.as_ref())
+                };
+                apply_observed_state(
+                    paths,
+                    device,
+                    OffsetDateTime::now_utc(),
+                    &source,
+                    !device.connected,
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "failed to sync state for {} ({})",
+                        device.address, device.path
+                    )
+                })?;
+            }
+
             self.subscribe(connection, device).await?;
 
             match self
@@ -151,7 +166,26 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
         .await
         .context("failed to subscribe to system sleep signals")?;
 
-    println!("{}", tracking_label(&state.devices, &addresses));
+    {
+        let tracking_message = if state.devices.is_empty() {
+            format!(
+                "Tracking {} configured device{}; none currently visible",
+                addresses.len(),
+                if addresses.len() == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Tracking {}",
+                state
+                    .devices
+                    .iter()
+                    .map(device_label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        println!("{tracking_message}");
+    }
 
     let mut changes_enabled = state.has_subscriptions();
 
@@ -365,26 +399,6 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
     Ok(())
 }
 
-fn sync_current_state(
-    paths: &TrackerPaths,
-    device: &DeviceInfo,
-    source_prefix: impl AsRef<str>,
-) -> Result<()> {
-    let source = if device.connected {
-        format!("{}-connected", source_prefix.as_ref())
-    } else {
-        format!("{}-disconnected", source_prefix.as_ref())
-    };
-
-    apply_observed_state(
-        paths,
-        device,
-        OffsetDateTime::now_utc(),
-        &source,
-        !device.connected,
-    )
-}
-
 fn apply_observed_state(
     paths: &TrackerPaths,
     device: &DeviceInfo,
@@ -419,33 +433,6 @@ fn apply_observed_state(
     }
 
     Ok(())
-}
-
-fn tracking_label(
-    devices: impl AsRef<[DeviceInfo]>,
-    addresses: impl AsRef<[BluetoothAddress]>,
-) -> String {
-    if devices.as_ref().is_empty() {
-        return format!(
-            "Tracking {} configured device{}; none currently visible",
-            addresses.as_ref().len(),
-            if addresses.as_ref().len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-    }
-
-    format!(
-        "Tracking {}",
-        devices
-            .as_ref()
-            .iter()
-            .map(device_label)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
 }
 
 fn device_label(device: &DeviceInfo) -> String {

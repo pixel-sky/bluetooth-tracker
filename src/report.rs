@@ -51,7 +51,15 @@ pub fn print_report(paths: &TrackerPaths, addresses: impl AsRef<[BluetoothAddres
     println!();
     println!("Recent spans:");
     for span in &spans[spans.len().saturating_sub(10)..] {
-        println!("{}", completed_span_line(span));
+        let marker = if span.end_uncertain { " uncertain" } else { "" };
+        println!(
+            "{}  {} -> {}  {}{}",
+            device_label(&span.device_address, span.device_name.as_deref()),
+            format_timestamp(span.started_at),
+            format_timestamp(span.ended_at),
+            format_duration(span.duration_seconds),
+            marker
+        );
         print_note("start", span.start_note.as_deref());
         print_note("end", span.end_note.as_deref());
     }
@@ -72,18 +80,6 @@ fn current_span_lines(active: &ActiveState, observed_at: OffsetDateTime) -> Vec<
     push_note_line(&mut lines, "start", active.start_note.as_deref());
     push_note_line(&mut lines, "end", active.end_note.as_deref());
     lines
-}
-
-fn completed_span_line(span: &SpanRecord) -> String {
-    let marker = if span.end_uncertain { " uncertain" } else { "" };
-    format!(
-        "{}  {} -> {}  {}{}",
-        device_label(&span.device_address, span.device_name.as_deref()),
-        format_timestamp(span.started_at),
-        format_timestamp(span.ended_at),
-        format_duration(span.duration_seconds),
-        marker
-    )
 }
 
 fn device_label(address: &BluetoothAddress, name: Option<impl AsRef<str>>) -> String {

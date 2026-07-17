@@ -1,11 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use zbus::{
-    Connection,
-    fdo::ObjectManagerProxy,
-    names::OwnedInterfaceName,
-    zvariant::{OwnedObjectPath, OwnedValue},
-};
+use zbus::{Connection, fdo::ObjectManagerProxy, names::OwnedInterfaceName, zvariant::OwnedValue};
 
 use crate::address::BluetoothAddress;
 
@@ -20,8 +15,6 @@ pub struct DeviceInfo {
     pub name: Option<String>,
     pub connected: bool,
 }
-
-type InterfaceProperties = HashMap<OwnedInterfaceName, HashMap<String, OwnedValue>>;
 
 pub async fn system_connection() -> Result<Connection> {
     Connection::system()
@@ -56,44 +49,31 @@ pub async fn list_devices(connection: &Connection) -> Result<Vec<DeviceInfo>> {
 
     let mut devices = objects
         .into_iter()
-        .filter_map(|(path, interfaces)| device_from_interfaces(path, interfaces))
+        .filter_map(|(path, mut interfaces)| {
+            let properties =
+                interfaces.remove(&OwnedInterfaceName::try_from(DEVICE_INTERFACE).ok()?)?;
+            let address = property::<String>(&properties, "Address")?;
+            let alias = property::<String>(&properties, "Alias");
+            let name = property::<String>(&properties, "Name");
+            let connected = property::<bool>(&properties, "Connected").unwrap_or(false);
+
+            Some(DeviceInfo {
+                path: path.to_string(),
+                address: BluetoothAddress::new_unchecked(address),
+                name: alias.or(name),
+                connected,
+            })
+        })
         .collect::<Vec<_>>();
     devices.sort_by(|left, right| left.address.cmp(&right.address));
     Ok(devices)
 }
 
-fn device_from_interfaces(
-    path: OwnedObjectPath,
-    mut interfaces: InterfaceProperties,
-) -> Option<DeviceInfo> {
-    let properties = interfaces.remove(&OwnedInterfaceName::try_from(DEVICE_INTERFACE).ok()?)?;
-    let address = string_property(&properties, "Address")?;
-    let alias = string_property(&properties, "Alias");
-    let name = string_property(&properties, "Name");
-    let connected = bool_property(&properties, "Connected").unwrap_or(false);
-
-    Some(DeviceInfo {
-        path: path.to_string(),
-        address: BluetoothAddress::new_unchecked(address),
-        name: alias.or(name),
-        connected,
-    })
-}
-
-pub fn bool_property(
-    properties: &HashMap<String, OwnedValue>,
-    name: impl AsRef<str>,
-) -> Option<bool> {
+fn property<T>(properties: &HashMap<String, OwnedValue>, name: impl AsRef<str>) -> Option<T>
+where
+    T: TryFrom<OwnedValue>,
+{
     properties
         .get(name.as_ref())
-        .and_then(|value| bool::try_from(value.clone()).ok())
-}
-
-pub fn string_property(
-    properties: &HashMap<String, OwnedValue>,
-    name: impl AsRef<str>,
-) -> Option<String> {
-    properties
-        .get(name.as_ref())
-        .and_then(|value| String::try_from(value.clone()).ok())
+        .and_then(|value| T::try_from(value.clone()).ok())
 }

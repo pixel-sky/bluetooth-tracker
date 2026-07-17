@@ -33,7 +33,7 @@ These findings apply to the pinned `zbus` 5.11.0 implementation; re-check the de
 ## Coding Style & Naming Conventions
 
 Use standard `rustfmt` formatting and Rust 2024 idioms. Prefer small modules that keep domain responsibilities clear, matching the current layout. Use `snake_case` for functions, variables, modules, and tests; `PascalCase` for types; and `SCREAMING_SNAKE_CASE` for constants. Return `anyhow::Result` at command and integration boundaries where context-rich errors are useful. Prefer `impl AsRef<Path>`, `impl AsRef<str>`, `impl AsRef<OsStr>`, and `impl AsRef<[T]>` for simple borrowed input parameters when doing so improves caller flexibility without complicating the implementation. Very important to keep code clean, simple, minimal, and reasonably free of unnecessary abstractions, dependencies, duplication, and boilerplate.
-Do not extract trivial logic into a function when it is used only once; inline it at the call site.
+Inline trivial single-use plumbing at the call site. Keep a helper separate when it provides meaningful domain separation or makes the code clearer, even if it has only one call site.
 
 ## Testing Guidelines
 
