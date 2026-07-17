@@ -1,6 +1,4 @@
-use crate::{
-    address::BluetoothAddress, bluez::DeviceInfo, paths::TrackerPaths, util::unique_addresses,
-};
+use crate::{address::BluetoothAddress, bluez::DeviceInfo, paths::TrackerPaths};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -79,19 +77,6 @@ impl SpanBoundary {
 pub enum NoteOutcome {
     ActiveSpan(BluetoothAddress),
     LatestSpan(BluetoothAddress),
-}
-
-pub fn known_device_addresses(paths: &TrackerPaths) -> Result<Vec<BluetoothAddress>> {
-    let mut addresses = read_jsonl::<ActiveState>(paths.actives_path())?
-        .into_iter()
-        .map(|active| active.device_address)
-        .collect::<Vec<_>>();
-    addresses.extend(
-        read_jsonl::<SpanRecord>(paths.spans_path())?
-            .into_iter()
-            .map(|span| span.device_address),
-    );
-    Ok(unique_addresses(addresses))
 }
 
 pub fn mark_connected(

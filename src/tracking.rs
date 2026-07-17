@@ -4,8 +4,8 @@ use crate::{
     display::{format_duration, format_timestamp},
     paths::TrackerPaths,
     storage::{
-        ActiveState, ConnectOutcome, DisconnectOutcome, SpanRecord, known_device_addresses,
-        mark_connected, mark_disconnected, read_jsonl,
+        ActiveState, ConnectOutcome, DisconnectOutcome, SpanRecord, mark_connected,
+        mark_disconnected, read_jsonl,
     },
     util::unique_addresses,
 };
@@ -329,6 +329,19 @@ fn handle_missing_device_at(
     }
 
     Ok(())
+}
+
+fn known_device_addresses(paths: &TrackerPaths) -> Result<Vec<BluetoothAddress>> {
+    let mut addresses = read_jsonl::<ActiveState>(paths.actives_path())?
+        .into_iter()
+        .map(|active| active.device_address)
+        .collect::<Vec<_>>();
+    addresses.extend(
+        read_jsonl::<SpanRecord>(paths.spans_path())?
+            .into_iter()
+            .map(|span| span.device_address),
+    );
+    Ok(unique_addresses(addresses))
 }
 
 pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Result<()> {
