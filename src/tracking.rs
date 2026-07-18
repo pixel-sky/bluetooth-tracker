@@ -28,6 +28,18 @@ struct WatchState {
     subscribed_addresses: BTreeSet<BluetoothAddress>,
 }
 
+struct Observation<'a> {
+    trigger: &'a str,
+    observation: &'a str,
+    end_uncertain: bool,
+}
+
+impl<'a> Observation<'a> {
+    fn source(&self) -> String {
+        format!("{}: {}", self.trigger, self.observation)
+    }
+}
+
 fn device_label(device: &DeviceInfo) -> String {
     match device.name.as_deref().filter(|name| !name.is_empty()) {
         Some(name) => format!("{name} ({})", device.address),
@@ -35,53 +47,36 @@ fn device_label(device: &DeviceInfo) -> String {
     }
 }
 
-fn handle_missing_device_at(
-    paths: &TrackerPaths,
-    address: &BluetoothAddress,
-    observed_at: OffsetDateTime,
-    source: impl AsRef<str>,
-) -> Result<()> {
-    let device = DeviceInfo {
-        path: String::new(),
-        address: address.clone(),
-        name: None,
-        connected: false,
-    };
-
-    match mark_disconnected(paths, &device, observed_at, source.as_ref(), true)? {
-        DisconnectOutcome::Closed(span) => println!(
-            "Bluetooth device {} missing at {}; closed active span after {} (uncertain)",
-            address,
-            format_timestamp(span.ended_at),
-            format_duration(span.duration_seconds),
-        ),
-        DisconnectOutcome::NoActiveSpan => {}
-    }
-
-    Ok(())
-}
-
 fn apply_observed_state(
     paths: &TrackerPaths,
     device: &DeviceInfo,
     observed_at: OffsetDateTime,
-    source: impl AsRef<str>,
-    end_uncertain: bool,
+    observation: Observation<'_>,
 ) -> Result<()> {
+    let source = observation.source();
+
     if device.connected {
-        match mark_connected(paths, device, observed_at, source.as_ref())? {
+        match mark_connected(paths, device, observed_at, &source)? {
             ConnectOutcome::Started => println!(
-                "Connected {} at {}",
+                "Connected {} via {} at {}",
                 device_label(device),
+                source,
                 format_timestamp(observed_at)
             ),
             ConnectOutcome::AlreadyActive => {}
         }
     } else {
-        match mark_disconnected(paths, device, observed_at, source.as_ref(), end_uncertain)? {
+        match mark_disconnected(
+            paths,
+            device,
+            observed_at,
+            &source,
+            observation.end_uncertain,
+        )? {
             DisconnectOutcome::Closed(span) => println!(
-                "Disconnected {} at {} after {}{}",
+                "Disconnected {} via {} at {} after {}{}",
                 device_label(device),
+                source,
                 format_timestamp(span.ended_at),
                 format_duration(span.duration_seconds),
                 if span.end_uncertain {
@@ -107,7 +102,7 @@ impl WatchState {
         connection: &zbus::Connection,
         paths: &TrackerPaths,
         addresses: impl AsRef<[BluetoothAddress]>,
-        source_prefix: impl AsRef<str>,
+        trigger: &str,
     ) -> Result<()> {
         let visible_devices = match bluez::list_devices(connection).await {
             Ok(devices) => devices,
@@ -128,8 +123,22 @@ impl WatchState {
                     eprintln!(
                         "Bluetooth device {address} is not currently visible; will retry later"
                     );
-                    let source = format!("{}-missing", source_prefix.as_ref());
-                    handle_missing_device_at(paths, address, OffsetDateTime::now_utc(), &source)?;
+                    let missing_device = DeviceInfo {
+                        path: String::new(),
+                        address: address.clone(),
+                        name: None,
+                        connected: false,
+                    };
+                    apply_observed_state(
+                        paths,
+                        &missing_device,
+                        OffsetDateTime::now_utc(),
+                        Observation {
+                            trigger,
+                            observation: "device missing",
+                            end_uncertain: true,
+                        },
+                    )?;
                     if let Some(device) = self
                         .devices
                         .iter_mut()
@@ -142,17 +151,20 @@ impl WatchState {
             };
 
             {
-                let source = if device.connected {
-                    format!("{}-connected", source_prefix.as_ref())
+                let observation = if device.connected {
+                    "device reported connected"
                 } else {
-                    format!("{}-disconnected", source_prefix.as_ref())
+                    "device reported disconnected"
                 };
                 apply_observed_state(
                     paths,
                     device,
                     OffsetDateTime::now_utc(),
-                    &source,
-                    !device.connected,
+                    Observation {
+                        trigger,
+                        observation,
+                        end_uncertain: !device.connected,
+                    },
                 )
                 .with_context(|| {
                     format!(
@@ -221,28 +233,6 @@ impl WatchState {
     }
 }
 
-fn handle_sleep_start(
-    paths: &TrackerPaths,
-    device: &DeviceInfo,
-    observed_at: OffsetDateTime,
-) -> Result<()> {
-    match mark_disconnected(paths, device, observed_at, "system-sleep-start", false)? {
-        DisconnectOutcome::Closed(span) => println!(
-            "System sleep at {}; closed span for {} after {}",
-            format_timestamp(span.ended_at),
-            device_label(device),
-            format_duration(span.duration_seconds),
-        ),
-        DisconnectOutcome::NoActiveSpan => println!(
-            "System sleep at {}; no active span for {}",
-            format_timestamp(observed_at),
-            device_label(device)
-        ),
-    }
-
-    Ok(())
-}
-
 fn unique_addresses(addresses: Vec<BluetoothAddress>) -> Vec<BluetoothAddress> {
     addresses
         .into_iter()
@@ -256,7 +246,7 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
     let connection = bluez::system_connection().await?;
     let mut state = WatchState::default();
     state
-        .resync(&connection, &paths, &addresses, "startup")
+        .resync(&connection, &paths, &addresses, "startup resync")
         .await?;
 
     let login1 = Proxy::new(
@@ -306,7 +296,7 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
             }
             _ = resync.tick(), if !sleeping => {
                 state
-                    .resync(&connection, &paths, &addresses, "periodic-resync")
+                    .resync(&connection, &paths, &addresses, "periodic resync")
                     .await?;
                 changes_enabled = state.has_subscriptions();
             }
@@ -323,14 +313,24 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     if !sleeping {
                         sleeping = true;
                         let observed_at = OffsetDateTime::now_utc();
-                        for device in &state.devices {
-                            handle_sleep_start(&paths, device, observed_at)?;
+                        for device in &mut state.devices {
+                            device.connected = false;
+                            apply_observed_state(
+                                &paths,
+                                device,
+                                observed_at,
+                                Observation {
+                                    trigger: "system sleep signal",
+                                    observation: "system entering sleep",
+                                    end_uncertain: false,
+                                },
+                            )?;
                         }
                     }
                 } else {
                     sleeping = false;
                     state
-                        .resync(&connection, &paths, &addresses, "system-wake")
+                        .resync(&connection, &paths, &addresses, "wake resync")
                         .await?;
                     changes_enabled = state.has_subscriptions();
                 }
@@ -369,12 +369,20 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                 };
 
                 device.connected = connected;
+                let observation = if connected {
+                    "device reported connected"
+                } else {
+                    "device reported disconnected"
+                };
                 apply_observed_state(
                     &paths,
                     device,
                     OffsetDateTime::now_utc(),
-                    "dbus-properties-changed",
-                    false,
+                    Observation {
+                        trigger: "BlueZ change signal",
+                        observation,
+                        end_uncertain: false,
+                    },
                 )?;
             }
         }
@@ -483,10 +491,36 @@ mod tests {
     }
 
     #[test]
-    fn system_sleep_closes_active_span_as_certain() -> Result<()> {
+    fn connected_observation_starts_span_with_source() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
         let device = connected_device();
+
+        apply_observed_state(
+            &paths,
+            &device,
+            datetime!(2026-07-01 12:00 UTC),
+            Observation {
+                trigger: "startup resync",
+                observation: "device reported connected",
+                end_uncertain: false,
+            },
+        )?;
+
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert_eq!(actives.len(), 1);
+        assert_eq!(
+            actives[0].start_source,
+            "startup resync: device reported connected"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn system_sleep_closes_active_span_as_certain() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let mut device = connected_device();
 
         mark_connected(
             &paths,
@@ -494,12 +528,25 @@ mod tests {
             datetime!(2026-07-01 12:00 UTC),
             "test-connect",
         )?;
-        handle_sleep_start(&paths, &device, datetime!(2026-07-01 12:30 UTC))?;
+        device.connected = false;
+        apply_observed_state(
+            &paths,
+            &device,
+            datetime!(2026-07-01 12:30 UTC),
+            Observation {
+                trigger: "system sleep signal",
+                observation: "system entering sleep",
+                end_uncertain: false,
+            },
+        )?;
 
         let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].duration_seconds, 1800);
-        assert_eq!(spans[0].end_source, "system-sleep-start");
+        assert_eq!(
+            spans[0].end_source,
+            "system sleep signal: system entering sleep"
+        );
         assert!(!spans[0].end_uncertain);
         Ok(())
     }
@@ -516,17 +563,27 @@ mod tests {
             datetime!(2026-07-01 12:00 UTC),
             "test-connect",
         )?;
-        handle_missing_device_at(
+        let missing_device = DeviceInfo {
+            path: String::new(),
+            address: device.address.clone(),
+            name: None,
+            connected: false,
+        };
+        apply_observed_state(
             &paths,
-            &device.address,
+            &missing_device,
             datetime!(2026-07-01 12:30 UTC),
-            "startup-missing",
+            Observation {
+                trigger: "startup resync",
+                observation: "device missing",
+                end_uncertain: true,
+            },
         )?;
 
         let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].duration_seconds, 1800);
-        assert_eq!(spans[0].end_source, "startup-missing");
+        assert_eq!(spans[0].end_source, "startup resync: device missing");
         assert!(spans[0].end_uncertain);
         assert_eq!(spans[0].device_name.as_deref(), Some("Keychron K3"));
         assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
