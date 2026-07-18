@@ -79,6 +79,21 @@ pub enum NoteOutcome {
     LatestSpan(BluetoothAddress),
 }
 
+fn normalize_note(note: impl AsRef<str>) -> Result<String> {
+    let note = note
+        .as_ref()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if note.is_empty() {
+        return Err(anyhow!("note cannot be empty"));
+    }
+    if note.chars().count() > MAX_NOTE_CHARS {
+        return Err(anyhow!("note must be {MAX_NOTE_CHARS} characters or fewer"));
+    }
+    Ok(note)
+}
+
 pub fn mark_connected(
     paths: &TrackerPaths,
     device: &DeviceInfo,
@@ -233,21 +248,6 @@ fn set_note_field(
         SpanBoundary::Start => *start_note = Some(note),
         SpanBoundary::End => *end_note = Some(note),
     }
-}
-
-fn normalize_note(note: impl AsRef<str>) -> Result<String> {
-    let note = note
-        .as_ref()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if note.is_empty() {
-        return Err(anyhow!("note cannot be empty"));
-    }
-    if note.chars().count() > MAX_NOTE_CHARS {
-        return Err(anyhow!("note must be {MAX_NOTE_CHARS} characters or fewer"));
-    }
-    Ok(note)
 }
 
 #[cfg(test)]

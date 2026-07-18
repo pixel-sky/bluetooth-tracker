@@ -10,7 +10,6 @@ mod storage;
 mod storage_jsonl;
 mod storage_lock;
 mod tracking;
-mod util;
 
 use anyhow::Result;
 use clap::Parser;

@@ -60,6 +60,24 @@ where
     Ok(lines)
 }
 
+fn ensure_parent_dir(path: impl AsRef<Path>) -> Result<()> {
+    if let Some(parent) = path.as_ref().parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    Ok(())
+}
+
+fn temp_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let mut file_name = path
+        .as_ref()
+        .file_name()
+        .map(ToOwned::to_owned)
+        .with_context(|| format!("no file name in path {}", path.as_ref().display()))?;
+    file_name.push(".tmp");
+    Ok(path.as_ref().with_file_name(file_name))
+}
+
 pub(crate) fn write_jsonl_unlocked<S: Serialize>(
     path: impl AsRef<Path>,
     entries: impl AsRef<[S]>,
@@ -116,23 +134,5 @@ pub(crate) fn append_jsonl_unlocked(
         .with_context(|| format!("failed to write {}", path.display()))?;
     file.sync_all()
         .with_context(|| format!("failed to sync {}", path.display()))?;
-    Ok(())
-}
-
-fn temp_path(path: impl AsRef<Path>) -> Result<PathBuf> {
-    let mut file_name = path
-        .as_ref()
-        .file_name()
-        .map(ToOwned::to_owned)
-        .with_context(|| format!("no file name in path {}", path.as_ref().display()))?;
-    file_name.push(".tmp");
-    Ok(path.as_ref().with_file_name(file_name))
-}
-
-fn ensure_parent_dir(path: impl AsRef<Path>) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
     Ok(())
 }

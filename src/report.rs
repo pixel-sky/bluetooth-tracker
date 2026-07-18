@@ -9,6 +9,41 @@ use crate::{
 use anyhow::Result;
 use time::OffsetDateTime;
 
+fn device_label(address: &BluetoothAddress, name: Option<impl AsRef<str>>) -> String {
+    match name {
+        Some(name) if !name.as_ref().is_empty() => format!("{} ({address})", name.as_ref()),
+        None => address.to_string(),
+        Some(_) => address.to_string(),
+    }
+}
+
+fn push_note_line(lines: &mut Vec<String>, label: impl AsRef<str>, note: Option<impl AsRef<str>>) {
+    if let Some(note) = note {
+        lines.push(format!("  {}: {}", label.as_ref(), note.as_ref()));
+    }
+}
+
+fn current_span_lines(active: &ActiveState, observed_at: OffsetDateTime) -> Vec<String> {
+    let elapsed = (observed_at - active.started_at).whole_seconds().max(0);
+    let mut lines = vec![
+        device_label(&active.device_address, active.device_name.as_deref()),
+        format!(
+            "  {} -> now  {}",
+            format_timestamp(active.started_at),
+            format_duration(elapsed)
+        ),
+    ];
+    push_note_line(&mut lines, "start", active.start_note.as_deref());
+    push_note_line(&mut lines, "end", active.end_note.as_deref());
+    lines
+}
+
+fn print_note(label: impl AsRef<str>, note: Option<impl AsRef<str>>) {
+    if let Some(note) = note {
+        println!("  {}: {}", label.as_ref(), note.as_ref());
+    }
+}
+
 pub fn print_report(paths: &TrackerPaths, addresses: impl AsRef<[BluetoothAddress]>) -> Result<()> {
     let observed_at = OffsetDateTime::now_utc();
 
@@ -65,41 +100,6 @@ pub fn print_report(paths: &TrackerPaths, addresses: impl AsRef<[BluetoothAddres
     }
 
     Ok(())
-}
-
-fn current_span_lines(active: &ActiveState, observed_at: OffsetDateTime) -> Vec<String> {
-    let elapsed = (observed_at - active.started_at).whole_seconds().max(0);
-    let mut lines = vec![
-        device_label(&active.device_address, active.device_name.as_deref()),
-        format!(
-            "  {} -> now  {}",
-            format_timestamp(active.started_at),
-            format_duration(elapsed)
-        ),
-    ];
-    push_note_line(&mut lines, "start", active.start_note.as_deref());
-    push_note_line(&mut lines, "end", active.end_note.as_deref());
-    lines
-}
-
-fn device_label(address: &BluetoothAddress, name: Option<impl AsRef<str>>) -> String {
-    match name {
-        Some(name) if !name.as_ref().is_empty() => format!("{} ({address})", name.as_ref()),
-        None => address.to_string(),
-        Some(_) => address.to_string(),
-    }
-}
-
-fn print_note(label: impl AsRef<str>, note: Option<impl AsRef<str>>) {
-    if let Some(note) = note {
-        println!("  {}: {}", label.as_ref(), note.as_ref());
-    }
-}
-
-fn push_note_line(lines: &mut Vec<String>, label: impl AsRef<str>, note: Option<impl AsRef<str>>) {
-    if let Some(note) = note {
-        lines.push(format!("  {}: {}", label.as_ref(), note.as_ref()));
-    }
 }
 
 #[cfg(test)]

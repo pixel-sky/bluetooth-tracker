@@ -7,6 +7,25 @@ pub struct BluetoothAddress(String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressParseError;
 
+fn normalize_address(address: impl AsRef<str>) -> String {
+    address
+        .as_ref()
+        .trim()
+        .replace(['-', '_'], ":")
+        .split(':')
+        .map(|part| part.to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+fn is_valid_address(address: impl AsRef<str>) -> bool {
+    let parts = address.as_ref().split(':').collect::<Vec<_>>();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
 impl BluetoothAddress {
     pub fn new_unchecked(address: impl AsRef<str>) -> Self {
         Self(normalize_address(address.as_ref()))
@@ -66,25 +85,6 @@ impl<'de> Deserialize<'de> for BluetoothAddress {
             .parse()
             .map_err(serde::de::Error::custom)
     }
-}
-
-fn normalize_address(address: impl AsRef<str>) -> String {
-    address
-        .as_ref()
-        .trim()
-        .replace(['-', '_'], ":")
-        .split(':')
-        .map(|part| part.to_ascii_uppercase())
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn is_valid_address(address: impl AsRef<str>) -> bool {
-    let parts = address.as_ref().split(':').collect::<Vec<_>>();
-    parts.len() == 6
-        && parts
-            .iter()
-            .all(|part| part.len() == 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
 #[cfg(test)]

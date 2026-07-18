@@ -7,7 +7,6 @@ use crate::{
         ActiveState, ConnectOutcome, DisconnectOutcome, SpanRecord, mark_connected,
         mark_disconnected, read_jsonl,
     },
-    util::unique_addresses,
 };
 use ::time::OffsetDateTime;
 use anyhow::{Context, Result};
@@ -27,6 +26,75 @@ struct WatchState {
     devices: Vec<DeviceInfo>,
     changes: SelectAll<BoxStream<'static, (BluetoothAddress, PropertiesChanged)>>,
     subscribed_addresses: BTreeSet<BluetoothAddress>,
+}
+
+fn device_label(device: &DeviceInfo) -> String {
+    match device.name.as_deref().filter(|name| !name.is_empty()) {
+        Some(name) => format!("{name} ({})", device.address),
+        None => device.address.to_string(),
+    }
+}
+
+fn handle_missing_device_at(
+    paths: &TrackerPaths,
+    address: &BluetoothAddress,
+    observed_at: OffsetDateTime,
+    source: impl AsRef<str>,
+) -> Result<()> {
+    let device = DeviceInfo {
+        path: String::new(),
+        address: address.clone(),
+        name: None,
+        connected: false,
+    };
+
+    match mark_disconnected(paths, &device, observed_at, source.as_ref(), true)? {
+        DisconnectOutcome::Closed(span) => println!(
+            "Bluetooth device {} missing at {}; closed active span after {} (uncertain)",
+            address,
+            format_timestamp(span.ended_at),
+            format_duration(span.duration_seconds),
+        ),
+        DisconnectOutcome::NoActiveSpan => {}
+    }
+
+    Ok(())
+}
+
+fn apply_observed_state(
+    paths: &TrackerPaths,
+    device: &DeviceInfo,
+    observed_at: OffsetDateTime,
+    source: impl AsRef<str>,
+    end_uncertain: bool,
+) -> Result<()> {
+    if device.connected {
+        match mark_connected(paths, device, observed_at, source.as_ref())? {
+            ConnectOutcome::Started => println!(
+                "Connected {} at {}",
+                device_label(device),
+                format_timestamp(observed_at)
+            ),
+            ConnectOutcome::AlreadyActive => {}
+        }
+    } else {
+        match mark_disconnected(paths, device, observed_at, source.as_ref(), end_uncertain)? {
+            DisconnectOutcome::Closed(span) => println!(
+                "Disconnected {} at {} after {}{}",
+                device_label(device),
+                format_timestamp(span.ended_at),
+                format_duration(span.duration_seconds),
+                if span.end_uncertain {
+                    " (uncertain)"
+                } else {
+                    ""
+                }
+            ),
+            DisconnectOutcome::NoActiveSpan => {}
+        }
+    }
+
+    Ok(())
 }
 
 impl WatchState {
@@ -118,6 +186,14 @@ impl WatchState {
             return Ok(());
         }
 
+        let report_subscription_error = |err: &zbus::Error| {
+            eprintln!(
+                "Failed to subscribe to {} changes; periodic resync will still run",
+                device_label(device)
+            );
+            eprintln!("{err:#}");
+        };
+
         let properties = match PropertiesProxy::builder(connection)
             .destination("org.bluez")?
             .path(device.path.as_str())?
@@ -126,7 +202,7 @@ impl WatchState {
         {
             Ok(properties) => properties,
             Err(err) => {
-                report_subscription_error(device, &err);
+                report_subscription_error(&err);
                 return Ok(());
             }
         };
@@ -138,11 +214,41 @@ impl WatchState {
                     .push(stream.map(move |signal| (address.clone(), signal)).boxed());
                 self.subscribed_addresses.insert(device.address.clone());
             }
-            Err(err) => report_subscription_error(device, &err),
+            Err(err) => report_subscription_error(&err),
         }
 
         Ok(())
     }
+}
+
+fn handle_sleep_start(
+    paths: &TrackerPaths,
+    device: &DeviceInfo,
+    observed_at: OffsetDateTime,
+) -> Result<()> {
+    match mark_disconnected(paths, device, observed_at, "system-sleep-start", false)? {
+        DisconnectOutcome::Closed(span) => println!(
+            "System sleep at {}; closed span for {} after {}",
+            format_timestamp(span.ended_at),
+            device_label(device),
+            format_duration(span.duration_seconds),
+        ),
+        DisconnectOutcome::NoActiveSpan => println!(
+            "System sleep at {}; no active span for {}",
+            format_timestamp(observed_at),
+            device_label(device)
+        ),
+    }
+
+    Ok(())
+}
+
+fn unique_addresses(addresses: Vec<BluetoothAddress>) -> Vec<BluetoothAddress> {
+    addresses
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Result<()> {
@@ -275,62 +381,6 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
     }
 }
 
-fn report_subscription_error(device: &DeviceInfo, err: &zbus::Error) {
-    eprintln!(
-        "Failed to subscribe to {} changes; periodic resync will still run",
-        device_label(device)
-    );
-    eprintln!("{err:#}");
-}
-
-fn handle_sleep_start(
-    paths: &TrackerPaths,
-    device: &DeviceInfo,
-    observed_at: OffsetDateTime,
-) -> Result<()> {
-    match mark_disconnected(paths, device, observed_at, "system-sleep-start", false)? {
-        DisconnectOutcome::Closed(span) => println!(
-            "System sleep at {}; closed span for {} after {}",
-            format_timestamp(span.ended_at),
-            device_label(device),
-            format_duration(span.duration_seconds),
-        ),
-        DisconnectOutcome::NoActiveSpan => println!(
-            "System sleep at {}; no active span for {}",
-            format_timestamp(observed_at),
-            device_label(device)
-        ),
-    }
-
-    Ok(())
-}
-
-fn handle_missing_device_at(
-    paths: &TrackerPaths,
-    address: &BluetoothAddress,
-    observed_at: OffsetDateTime,
-    source: impl AsRef<str>,
-) -> Result<()> {
-    let device = DeviceInfo {
-        path: String::new(),
-        address: address.clone(),
-        name: None,
-        connected: false,
-    };
-
-    match mark_disconnected(paths, &device, observed_at, source.as_ref(), true)? {
-        DisconnectOutcome::Closed(span) => println!(
-            "Bluetooth device {} missing at {}; closed active span after {} (uncertain)",
-            address,
-            format_timestamp(span.ended_at),
-            format_duration(span.duration_seconds),
-        ),
-        DisconnectOutcome::NoActiveSpan => {}
-    }
-
-    Ok(())
-}
-
 fn known_device_addresses(paths: &TrackerPaths) -> Result<Vec<BluetoothAddress>> {
     let mut addresses = read_jsonl::<ActiveState>(paths.actives_path())?
         .into_iter()
@@ -410,49 +460,6 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
     }
 
     Ok(())
-}
-
-fn apply_observed_state(
-    paths: &TrackerPaths,
-    device: &DeviceInfo,
-    observed_at: OffsetDateTime,
-    source: impl AsRef<str>,
-    end_uncertain: bool,
-) -> Result<()> {
-    if device.connected {
-        match mark_connected(paths, device, observed_at, source.as_ref())? {
-            ConnectOutcome::Started => println!(
-                "Connected {} at {}",
-                device_label(device),
-                format_timestamp(observed_at)
-            ),
-            ConnectOutcome::AlreadyActive => {}
-        }
-    } else {
-        match mark_disconnected(paths, device, observed_at, source.as_ref(), end_uncertain)? {
-            DisconnectOutcome::Closed(span) => println!(
-                "Disconnected {} at {} after {}{}",
-                device_label(device),
-                format_timestamp(span.ended_at),
-                format_duration(span.duration_seconds),
-                if span.end_uncertain {
-                    " (uncertain)"
-                } else {
-                    ""
-                }
-            ),
-            DisconnectOutcome::NoActiveSpan => {}
-        }
-    }
-
-    Ok(())
-}
-
-fn device_label(device: &DeviceInfo) -> String {
-    match device.name.as_deref().filter(|name| !name.is_empty()) {
-        Some(name) => format!("{name} ({})", device.address),
-        None => device.address.to_string(),
-    }
 }
 
 #[cfg(test)]
