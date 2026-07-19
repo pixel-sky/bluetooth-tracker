@@ -1,6 +1,6 @@
 use crate::{
     address::BluetoothAddress,
-    bluez::{self, DEVICE_INTERFACE, DeviceInfo},
+    bluez::{self, DeviceInfo},
     display::{format_duration, format_timestamp},
     paths::TrackerPaths,
     storage::{
@@ -10,23 +10,10 @@ use crate::{
 };
 use ::time::OffsetDateTime;
 use anyhow::{Context, Result};
-use futures_util::{
-    StreamExt,
-    stream::{BoxStream, SelectAll},
-};
+use futures_util::StreamExt;
 use std::collections::BTreeSet;
 use tokio::time::{self, Duration, MissedTickBehavior};
-use zbus::{
-    Proxy,
-    fdo::{PropertiesChanged, PropertiesProxy},
-};
-
-#[derive(Default)]
-struct WatchState {
-    devices: Vec<DeviceInfo>,
-    changes: SelectAll<BoxStream<'static, (BluetoothAddress, PropertiesChanged)>>,
-    subscribed_addresses: BTreeSet<BluetoothAddress>,
-}
+use zbus::{Proxy, fdo::PropertiesChanged};
 
 struct Observation<'a> {
     trigger: &'a str,
@@ -92,145 +79,85 @@ fn apply_observed_state(
     Ok(())
 }
 
-impl WatchState {
-    fn has_subscriptions(&self) -> bool {
-        !self.changes.is_empty()
-    }
+async fn resync(
+    devices: &mut Vec<DeviceInfo>,
+    connection: &zbus::Connection,
+    paths: &TrackerPaths,
+    addresses: impl AsRef<[BluetoothAddress]>,
+    trigger: &str,
+) -> Result<()> {
+    let visible_devices = match bluez::list_devices(connection).await {
+        Ok(devices) => devices,
+        Err(err) => {
+            eprintln!("Unable to query Bluetooth devices; will retry later");
+            eprintln!("{err:#}");
+            return Ok(());
+        }
+    };
 
-    async fn resync(
-        &mut self,
-        connection: &zbus::Connection,
-        paths: &TrackerPaths,
-        addresses: impl AsRef<[BluetoothAddress]>,
-        trigger: &str,
-    ) -> Result<()> {
-        let visible_devices = match bluez::list_devices(connection).await {
-            Ok(devices) => devices,
-            Err(err) => {
-                eprintln!("Unable to query Bluetooth devices; will retry later");
-                eprintln!("{err:#}");
-                return Ok(());
-            }
-        };
-
-        for address in addresses.as_ref() {
-            let device = match visible_devices
-                .iter()
-                .find(|device| device.address == *address)
-            {
-                Some(device) => device,
-                None => {
-                    eprintln!(
-                        "Bluetooth device {address} is not currently visible; will retry later"
-                    );
-                    let missing_device = DeviceInfo {
-                        path: String::new(),
-                        address: address.clone(),
-                        name: None,
-                        connected: false,
-                    };
-                    apply_observed_state(
-                        paths,
-                        &missing_device,
-                        OffsetDateTime::now_utc(),
-                        Observation {
-                            trigger,
-                            observation: "device missing",
-                            end_uncertain: true,
-                        },
-                    )?;
-                    if let Some(device) = self
-                        .devices
-                        .iter_mut()
-                        .find(|device| device.address == *address)
-                    {
-                        device.connected = false;
-                    }
-                    continue;
-                }
-            };
-
-            {
-                let observation = if device.connected {
-                    "device reported connected"
-                } else {
-                    "device reported disconnected"
+    for address in addresses.as_ref() {
+        let device = match visible_devices
+            .iter()
+            .find(|device| device.address == *address)
+        {
+            Some(device) => device,
+            None => {
+                eprintln!("Bluetooth device {address} is not currently visible; will retry later");
+                let missing_device = DeviceInfo {
+                    path: String::new(),
+                    address: address.clone(),
+                    name: None,
+                    connected: false,
                 };
                 apply_observed_state(
                     paths,
-                    device,
+                    &missing_device,
                     OffsetDateTime::now_utc(),
                     Observation {
                         trigger,
-                        observation,
-                        end_uncertain: !device.connected,
+                        observation: "device missing",
+                        end_uncertain: true,
                     },
-                )
-                .with_context(|| {
-                    format!(
-                        "failed to sync state for {} ({})",
-                        device.address, device.path
-                    )
-                })?;
+                )?;
+                if let Some(device) = devices.iter_mut().find(|device| device.address == *address) {
+                    device.connected = false;
+                }
+                continue;
             }
-
-            self.subscribe(connection, device).await?;
-
-            match self
-                .devices
-                .iter_mut()
-                .find(|tracked| tracked.address == *address)
-            {
-                Some(tracked) => *tracked = device.clone(),
-                None => self.devices.push(device.clone()),
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn subscribe(
-        &mut self,
-        connection: &zbus::Connection,
-        device: &DeviceInfo,
-    ) -> Result<()> {
-        if self.subscribed_addresses.contains(&device.address) {
-            return Ok(());
-        }
-
-        let report_subscription_error = |err: &zbus::Error| {
-            eprintln!(
-                "Failed to subscribe to {} changes; periodic resync will still run",
-                device_label(device)
-            );
-            eprintln!("{err:#}");
         };
 
-        let properties = match PropertiesProxy::builder(connection)
-            .destination("org.bluez")?
-            .path(device.path.as_str())?
-            .build()
-            .await
+        let observation = if device.connected {
+            "device reported connected"
+        } else {
+            "device reported disconnected"
+        };
+        apply_observed_state(
+            paths,
+            device,
+            OffsetDateTime::now_utc(),
+            Observation {
+                trigger,
+                observation,
+                end_uncertain: !device.connected,
+            },
+        )
+        .with_context(|| {
+            format!(
+                "failed to sync state for {} ({})",
+                device.address, device.path
+            )
+        })?;
+
+        match devices
+            .iter_mut()
+            .find(|tracked| tracked.address == *address)
         {
-            Ok(properties) => properties,
-            Err(err) => {
-                report_subscription_error(&err);
-                return Ok(());
-            }
-        };
-
-        match properties.receive_properties_changed().await {
-            Ok(stream) => {
-                let address = device.address.clone();
-                self.changes
-                    .push(stream.map(move |signal| (address.clone(), signal)).boxed());
-                self.subscribed_addresses.insert(device.address.clone());
-            }
-            Err(err) => report_subscription_error(&err),
+            Some(tracked) => *tracked = device.clone(),
+            None => devices.push(device.clone()),
         }
-
-        Ok(())
     }
+
+    Ok(())
 }
 
 fn unique_addresses(addresses: Vec<BluetoothAddress>) -> Vec<BluetoothAddress> {
@@ -244,10 +171,16 @@ fn unique_addresses(addresses: Vec<BluetoothAddress>) -> Vec<BluetoothAddress> {
 pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Result<()> {
     let addresses = unique_addresses(addresses);
     let connection = bluez::system_connection().await?;
-    let mut state = WatchState::default();
-    state
-        .resync(&connection, &paths, &addresses, "startup resync")
-        .await?;
+    let mut device_changes = bluez::receive_device_property_changes(&connection).await?;
+    let mut devices = Vec::new();
+    resync(
+        &mut devices,
+        &connection,
+        &paths,
+        &addresses,
+        "startup resync",
+    )
+    .await?;
 
     let login1 = Proxy::new(
         &connection,
@@ -263,7 +196,7 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
         .context("failed to subscribe to system sleep signals")?;
 
     {
-        let tracking_message = if state.devices.is_empty() {
+        let tracking_message = if devices.is_empty() {
             format!(
                 "Tracking {} configured device{}; none currently visible",
                 addresses.len(),
@@ -272,8 +205,7 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
         } else {
             format!(
                 "Tracking {}",
-                state
-                    .devices
+                devices
                     .iter()
                     .map(device_label)
                     .collect::<Vec<_>>()
@@ -283,10 +215,10 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
         println!("{tracking_message}");
     }
 
-    let mut changes_enabled = state.has_subscriptions();
-
-    let mut resync = time::interval(Duration::from_secs(60));
-    resync.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let resync_period = Duration::from_secs(60);
+    let mut resync_interval =
+        time::interval_at(time::Instant::now() + resync_period, resync_period);
+    resync_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut sleeping = false;
     loop {
         tokio::select! {
@@ -294,11 +226,15 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                 println!("Stopping tracker");
                 return Ok(());
             }
-            _ = resync.tick(), if !sleeping => {
-                state
-                    .resync(&connection, &paths, &addresses, "periodic resync")
-                    .await?;
-                changes_enabled = state.has_subscriptions();
+            _ = resync_interval.tick(), if !sleeping => {
+                resync(
+                    &mut devices,
+                    &connection,
+                    &paths,
+                    &addresses,
+                    "periodic resync",
+                )
+                .await?;
             }
             signal = sleep_events.next() => {
                 let Some(signal) = signal else {
@@ -313,7 +249,7 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     if !sleeping {
                         sleeping = true;
                         let observed_at = OffsetDateTime::now_utc();
-                        for device in &mut state.devices {
+                        for device in &mut devices {
                             device.connected = false;
                             apply_observed_state(
                                 &paths,
@@ -329,29 +265,36 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     }
                 } else {
                     sleeping = false;
-                    state
-                        .resync(&connection, &paths, &addresses, "wake resync")
-                        .await?;
-                    changes_enabled = state.has_subscriptions();
+                    resync(
+                        &mut devices,
+                        &connection,
+                        &paths,
+                        &addresses,
+                        "wake resync",
+                    )
+                    .await?;
                 }
             }
-            signal = state.changes.next(), if changes_enabled => {
-                let Some((address, signal)) = signal else {
-                    changes_enabled = false;
-                    state.subscribed_addresses.clear();
-                    eprintln!("BlueZ PropertiesChanged streams ended; continuing with periodic resync");
-                    continue;
+            signal = device_changes.next() => {
+                let Some(signal) = signal else {
+                    anyhow::bail!("BlueZ PropertiesChanged stream ended");
                 };
+
+                let message = signal.context("BlueZ PropertiesChanged stream failed")?;
 
                 if sleeping {
                     continue;
                 }
 
-                let args = signal.args()?;
-                if args.interface_name() != DEVICE_INTERFACE {
+                let Some(path) = message.header().path().map(|path| path.as_str().to_owned()) else {
                     continue;
-                }
+                };
 
+                let Some(signal) = PropertiesChanged::from_message(message) else {
+                    continue;
+                };
+
+                let args = signal.args()?;
                 let Some(value) = args.changed_properties().get("Connected") else {
                     continue;
                 };
@@ -360,11 +303,18 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     continue;
                 };
 
-                let Some(device) = state
-                    .devices
+                let Some(device) = devices
                     .iter_mut()
-                    .find(|device| device.address == address)
+                    .find(|device| device.path == path)
                 else {
+                    resync(
+                        &mut devices,
+                        &connection,
+                        &paths,
+                        &addresses,
+                        "dbus-unknown-device",
+                    )
+                    .await?;
                     continue;
                 };
 

@@ -54,8 +54,9 @@ keychron-tracker service uninstall
 ```
 
 `watch` is the long-running command used by the user-level systemd service. It listens
-for BlueZ `org.bluez.Device1.Connected` changes through D-Bus for each configured
-address.
+for BlueZ `org.bluez.Device1.Connected` changes through one D-Bus match rule covering
+all BlueZ device paths. It applies configured devices immediately and verifies state
+every 60 seconds and when the system wakes.
 
 `note start` and `note end` add short notes to the active span when one exists, or
 to the latest completed span otherwise. Use `--address` when more than one device is

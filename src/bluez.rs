@@ -1,11 +1,16 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use zbus::{Connection, fdo::ObjectManagerProxy, names::OwnedInterfaceName, zvariant::OwnedValue};
+use zbus::{
+    Connection, MatchRule, MessageStream, fdo::ObjectManagerProxy, message::Type,
+    names::OwnedInterfaceName, zvariant::OwnedValue,
+};
 
 use crate::address::BluetoothAddress;
 
 const BLUEZ_DESTINATION: &str = "org.bluez";
 const OBJECT_MANAGER_PATH: &str = "/";
+const BLUEZ_PATH_NAMESPACE: &str = "/org/bluez";
+const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 pub const DEVICE_INTERFACE: &str = "org.bluez.Device1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +72,21 @@ pub async fn list_devices(connection: &Connection) -> Result<Vec<DeviceInfo>> {
         .collect::<Vec<_>>();
     devices.sort_by(|left, right| left.address.cmp(&right.address));
     Ok(devices)
+}
+
+pub async fn receive_device_property_changes(connection: &Connection) -> Result<MessageStream> {
+    let rule = MatchRule::builder()
+        .msg_type(Type::Signal)
+        .sender(BLUEZ_DESTINATION)?
+        .interface(PROPERTIES_INTERFACE)?
+        .member("PropertiesChanged")?
+        .path_namespace(BLUEZ_PATH_NAMESPACE)?
+        .arg(0, DEVICE_INTERFACE)?
+        .build();
+
+    MessageStream::for_match_rule(rule, connection, None)
+        .await
+        .context("failed to subscribe to BlueZ device property changes")
 }
 
 fn property<T>(properties: &HashMap<String, OwnedValue>, name: impl AsRef<str>) -> Option<T>
