@@ -286,54 +286,23 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     continue;
                 }
 
-                let Some(path) = message.header().path().map(|path| path.as_str().to_owned()) else {
-                    continue;
-                };
-
                 let Some(signal) = PropertiesChanged::from_message(message) else {
                     continue;
                 };
 
                 let args = signal.args()?;
-                let Some(value) = args.changed_properties().get("Connected") else {
+                if !args.changed_properties().contains_key("Connected") {
                     continue;
-                };
+                }
 
-                let Ok(connected) = bool::try_from(value) else {
-                    continue;
-                };
-
-                let Some(device) = devices
-                    .iter_mut()
-                    .find(|device| device.path == path)
-                else {
-                    resync(
-                        &mut devices,
-                        &connection,
-                        &paths,
-                        &addresses,
-                        "dbus-unknown-device",
-                    )
-                    .await?;
-                    continue;
-                };
-
-                device.connected = connected;
-                let observation = if connected {
-                    "device reported connected"
-                } else {
-                    "device reported disconnected"
-                };
-                apply_observed_state(
+                resync(
+                    &mut devices,
+                    &connection,
                     &paths,
-                    device,
-                    OffsetDateTime::now_utc(),
-                    Observation {
-                        trigger: "BlueZ change signal",
-                        observation,
-                        end_uncertain: false,
-                    },
-                )?;
+                    &addresses,
+                    "BlueZ change signal",
+                )
+                .await?;
             }
         }
     }
