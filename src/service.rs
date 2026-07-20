@@ -60,14 +60,14 @@ fn render_unit(
         )
     })?;
     let mut args = vec![
-        systemd_arg(exe.as_ref().as_os_str()),
-        systemd_arg(OsStr::new("--state-dir")),
-        systemd_arg(state_dir.as_os_str()),
-        systemd_arg(OsStr::new("watch")),
+        systemd_arg(exe.as_ref().as_os_str())?,
+        systemd_arg(OsStr::new("--state-dir"))?,
+        systemd_arg(state_dir.as_os_str())?,
+        systemd_arg(OsStr::new("watch"))?,
     ];
     for address in addresses.as_ref() {
-        args.push(systemd_arg(OsStr::new("--address")));
-        args.push(systemd_arg(OsStr::new(address.as_str())));
+        args.push(systemd_arg(OsStr::new("--address"))?);
+        args.push(systemd_arg(OsStr::new(address.as_str()))?);
     }
     let exec_start = args.join(" ");
 
@@ -105,13 +105,17 @@ fn run_systemctl(args: impl AsRef<[&'static str]>) -> Result<()> {
     ))
 }
 
-fn systemd_arg(value: impl AsRef<OsStr>) -> String {
-    let value = value.as_ref().to_string_lossy();
+fn systemd_arg(value: impl AsRef<OsStr>) -> Result<String> {
+    let value = value
+        .as_ref()
+        .to_str()
+        .context("systemd argument is not valid UTF-8")?;
+
     if value
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':' | '='))
     {
-        return value.into_owned();
+        return Ok(value.to_owned());
     }
 
     let escaped = value
@@ -119,7 +123,8 @@ fn systemd_arg(value: impl AsRef<OsStr>) -> String {
         .replace('"', "\\\"")
         .replace('$', "$$")
         .replace('%', "%%");
-    format!("\"{escaped}\"")
+
+    Ok(format!("\"{escaped}\""))
 }
 
 #[cfg(test)]
@@ -156,7 +161,7 @@ mod tests {
 
         assert!(unit.contains(&format!(
             "--state-dir {} watch",
-            systemd_arg(state_dir.as_os_str())
+            systemd_arg(state_dir.as_os_str()).unwrap()
         )));
     }
 
@@ -168,5 +173,17 @@ mod tests {
         assert!(unit.contains(
             "ExecStart=\"/tmp/keychron%%tracker\" --state-dir \"/tmp/keychron%%state\" watch"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rendered_unit_rejects_non_utf8_arguments() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let paths = TrackerPaths::new("/tmp/keychron-state");
+        let exe = Path::new(OsStr::from_bytes(b"/tmp/keychron-\xfftracker"));
+        let error = render_unit(exe, [], &paths).unwrap_err();
+
+        assert_eq!(error.to_string(), "systemd argument is not valid UTF-8");
     }
 }
