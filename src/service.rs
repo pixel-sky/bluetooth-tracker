@@ -30,6 +30,14 @@ pub fn uninstall() -> Result<()> {
     let service_dir = default_user_systemd_dir()?;
     let service_path = service_dir.join(SERVICE_NAME);
 
+    if !service_path
+        .try_exists()
+        .with_context(|| format!("failed to inspect {}", service_path.display()))?
+    {
+        println!("Service not found; possibly already uninstalled");
+        return Ok(());
+    }
+
     run_systemctl(["--user", "disable", "--now", SERVICE_NAME])?;
     match fs::remove_file(&service_path) {
         Ok(()) => {}
