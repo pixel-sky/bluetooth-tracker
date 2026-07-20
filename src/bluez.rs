@@ -12,6 +12,7 @@ const OBJECT_MANAGER_PATH: &str = "/";
 const BLUEZ_PATH_NAMESPACE: &str = "/org/bluez";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 pub const DEVICE_INTERFACE: &str = "org.bluez.Device1";
+pub const BATTERY_INTERFACE: &str = "org.bluez.Battery1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
@@ -81,7 +82,6 @@ pub async fn receive_device_property_changes(connection: &Connection) -> Result<
         .interface(PROPERTIES_INTERFACE)?
         .member("PropertiesChanged")?
         .path_namespace(BLUEZ_PATH_NAMESPACE)?
-        .arg(0, DEVICE_INTERFACE)?
         .build();
 
     MessageStream::for_match_rule(rule, connection, None)

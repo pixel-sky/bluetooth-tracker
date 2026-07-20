@@ -1,4 +1,5 @@
 mod address;
+mod battery;
 mod bluez;
 mod cli;
 mod display;
@@ -13,7 +14,7 @@ mod tracking;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, NoteCommands, ServiceCommands};
+use cli::{BatteryCommands, Cli, Commands, NoteCommands, ServiceCommands};
 use paths::TrackerPaths;
 use storage::SpanBoundary;
 
@@ -37,6 +38,12 @@ async fn main() -> Result<()> {
             NoteCommands::End { address, text } => {
                 notes::add_note(&paths, address.as_ref(), SpanBoundary::End, &text)
             }
+        },
+        Commands::Battery { command } => match command {
+            BatteryCommands::Set {
+                address,
+                percentage,
+            } => battery::set(&paths, address.as_ref(), percentage),
         },
         Commands::Service { command } => match command {
             ServiceCommands::Install { address } => service::install(&address, &paths),

@@ -1,6 +1,7 @@
 # Bluetooth Device Tracker
 
-Tracks Bluetooth connection spans for explicit Bluetooth devices on Linux/BlueZ.
+Tracks Bluetooth connection spans and battery observations for explicit Bluetooth
+devices on Linux/BlueZ.
 
 ## Quick Start
 
@@ -49,15 +50,23 @@ keychron-tracker report
 keychron-tracker report --address AA:BB:CC:DD:EE:FF
 keychron-tracker note start --address AA:BB:CC:DD:EE:FF focused writing
 keychron-tracker note end --address AA:BB:CC:DD:EE:FF coffee break
+keychron-tracker battery set 55
 keychron-tracker service install --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
 keychron-tracker service uninstall
 ```
 
 `watch` is the long-running command used by the user-level systemd service. It listens
-for BlueZ `org.bluez.Device1.Connected` changes through one D-Bus match rule covering
-all BlueZ device paths. Each change triggers a fresh query of BlueZ's current state;
-the possibly stale value carried by the signal is not applied directly. It also queries
-state at startup, every 60 seconds, and when the system wakes.
+for BlueZ `org.bluez.Device1.Connected` and `org.bluez.Battery1.Percentage` changes
+through one D-Bus match rule covering all BlueZ device paths. Connection changes trigger
+a fresh query of BlueZ's current state; the possibly stale value carried by the signal is
+not applied directly. It also queries connection state at startup, every 60 seconds, and
+when the system wakes. Battery values are recorded only from live change signals; the
+tracker does not poll devices or save BlueZ's cached startup value.
+
+`battery set` records a manual percentage on the device's active span, or on its latest
+completed span when the device is disconnected. Automatic and manual observations are
+stored inside their corresponding entries in `active.jsonl` and `spans.jsonl`. Use
+`--address` when more than one device is active.
 
 `note start` and `note end` add short notes to the active span when one exists, or
 to the latest completed span otherwise. Use `--address` when more than one device is

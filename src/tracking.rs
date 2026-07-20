@@ -1,11 +1,11 @@
 use crate::{
     address::BluetoothAddress,
-    bluez::{self, DeviceInfo},
+    bluez::{self, BATTERY_INTERFACE, DEVICE_INTERFACE, DeviceInfo},
     display::{format_duration, format_timestamp},
     paths::TrackerPaths,
     storage::{
-        ActiveState, ConnectOutcome, DisconnectOutcome, SpanRecord, mark_connected,
-        mark_disconnected, read_jsonl,
+        ActiveState, BatteryObservation, BatterySource, ConnectOutcome, DisconnectOutcome,
+        SpanRecord, mark_connected, mark_disconnected, read_jsonl, record_battery_observation,
     },
 };
 use ::time::OffsetDateTime;
@@ -286,23 +286,53 @@ pub async fn watch(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Res
                     continue;
                 }
 
+                let path = message.header().path().map(ToString::to_string);
                 let Some(signal) = PropertiesChanged::from_message(message) else {
                     continue;
                 };
 
                 let args = signal.args()?;
-                if !args.changed_properties().contains_key("Connected") {
-                    continue;
-                }
+                if args.interface_name() == DEVICE_INTERFACE {
+                    if !args.changed_properties().contains_key("Connected") {
+                        continue;
+                    }
 
-                resync(
-                    &mut devices,
-                    &connection,
-                    &paths,
-                    &addresses,
-                    "BlueZ change signal",
-                )
-                .await?;
+                    resync(
+                        &mut devices,
+                        &connection,
+                        &paths,
+                        &addresses,
+                        "BlueZ change signal",
+                    )
+                    .await?;
+                } else if args.interface_name() == BATTERY_INTERFACE {
+                    let Some(percentage) = args
+                        .changed_properties()
+                        .get("Percentage")
+                        .and_then(|value| u8::try_from(value).ok())
+                    else {
+                        continue;
+                    };
+                    let Some(device) = devices
+                        .iter()
+                        .find(|device| path.as_deref() == Some(device.path.as_str()))
+                    else {
+                        continue;
+                    };
+
+                    let observed_at = OffsetDateTime::now_utc();
+                    let observation = BatteryObservation {
+                        observed_at,
+                        percentage,
+                        source: BatterySource::BluezPropertiesChanged,
+                    };
+                    record_battery_observation(&paths, Some(&device.address), observation)?;
+                    println!(
+                        "Battery {} at {percentage}% at {}",
+                        device_label(device),
+                        format_timestamp(observed_at)
+                    );
+                }
             }
         }
     }
@@ -383,6 +413,25 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
             }
         } else {
             println!("Active span: no");
+        }
+
+        let battery = active
+            .and_then(|active| active.battery_observations.last())
+            .or_else(|| {
+                spans
+                    .iter()
+                    .rev()
+                    .filter(|span| span.device_address == *address)
+                    .find_map(|span| span.battery_observations.last())
+            });
+        match battery {
+            Some(observation) => println!(
+                "Battery: {}% at {} ({})",
+                observation.percentage,
+                format_timestamp(observation.observed_at),
+                observation.source
+            ),
+            None => println!("Battery: unknown"),
         }
     }
 
