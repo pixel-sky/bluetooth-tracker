@@ -2,7 +2,7 @@ use crate::storage_lock::acquire_storage_lock;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
@@ -106,33 +106,5 @@ pub(crate) fn write_jsonl_unlocked<S: Serialize>(
         )
     })?;
 
-    Ok(())
-}
-
-pub(crate) fn append_jsonl_unlocked(
-    path: impl AsRef<Path>,
-    value: &impl Serialize,
-    label: impl AsRef<str>,
-) -> Result<()> {
-    let path = path.as_ref();
-    let mut bytes = serde_json::to_vec(value).with_context(|| {
-        format!(
-            "failed to serialize {} for {}",
-            label.as_ref(),
-            path.display()
-        )
-    })?;
-    bytes.push(b'\n');
-
-    ensure_parent_dir(path)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    file.write_all(&bytes)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.sync_all()
-        .with_context(|| format!("failed to sync {}", path.display()))?;
     Ok(())
 }

@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 
 pub use crate::storage_jsonl::read_jsonl;
 use crate::{
-    storage_jsonl::{append_jsonl_unlocked, read_jsonl_unlocked, write_jsonl_unlocked},
+    storage_jsonl::{read_jsonl_unlocked, write_jsonl_unlocked},
     storage_lock::acquire_storage_lock,
 };
 
@@ -190,7 +190,7 @@ pub fn mark_disconnected(
 
     let active = actives[index].clone();
 
-    let spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
+    let mut spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
     if let Some(record) = completed_span_for_active(&spans, &active).cloned() {
         actives.remove(index);
         write_jsonl_unlocked(actives_path, actives)?;
@@ -210,7 +210,8 @@ pub fn mark_disconnected(
         battery_observations: active.battery_observations,
     };
 
-    append_jsonl_unlocked(spans_path, &record, "span")?;
+    spans.push(record.clone());
+    write_jsonl_unlocked(spans_path, spans)?;
     actives.remove(index);
     write_jsonl_unlocked(actives_path, actives)?;
 
@@ -456,7 +457,7 @@ mod tests {
         let record = completed_span(&device, started_at, datetime!(2026-06-28 12:10 UTC));
 
         mark_connected(&paths, &device, started_at, "test-connect")?;
-        append_jsonl_unlocked(paths.spans_path(), &record, "span")?;
+        write_jsonl_unlocked(paths.spans_path(), [&record])?;
 
         assert_eq!(
             mark_disconnected(
@@ -483,7 +484,7 @@ mod tests {
         let new_started_at = datetime!(2026-06-28 12:20 UTC);
 
         mark_connected(&paths, &device, stale_started_at, "test-connect")?;
-        append_jsonl_unlocked(paths.spans_path(), &record, "span")?;
+        write_jsonl_unlocked(paths.spans_path(), [&record])?;
 
         assert_eq!(
             mark_connected(&paths, &device, new_started_at, "startup-connected")?,
