@@ -7,6 +7,8 @@ use crate::{
         ActiveState, BatteryObservation, BatterySource, ConnectOutcome, DisconnectOutcome,
         SpanRecord, mark_connected, mark_disconnected, read_jsonl, record_battery_observation,
     },
+    storage_jsonl::read_jsonl_unlocked,
+    storage_lock::acquire_storage_lock,
 };
 use ::time::OffsetDateTime;
 use anyhow::{Context, Result};
@@ -365,8 +367,10 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
 
     let connection = bluez::system_connection().await?;
     let devices = bluez::list_devices(&connection).await?;
-    let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
-    let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+    let _lock = acquire_storage_lock(paths.state_dir())?;
+    let actives = read_jsonl_unlocked::<ActiveState>(paths.actives_path())?;
+    let spans = read_jsonl_unlocked::<SpanRecord>(paths.spans_path())?;
+    drop(_lock);
 
     for (index, address) in addresses.iter().enumerate() {
         if index > 0 {
