@@ -18,8 +18,7 @@ fn format_timestamp_value(value: OffsetDateTime) -> String {
         .unwrap_or_else(|_| value.unix_timestamp().to_string())
 }
 
-pub fn format_duration(total_seconds: i64) -> String {
-    let total_seconds = total_seconds.max(0);
+pub fn format_duration(total_seconds: u64) -> String {
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;

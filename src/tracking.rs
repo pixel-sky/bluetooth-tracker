@@ -65,7 +65,7 @@ fn apply_observed_state(
                 device_label(device),
                 source,
                 format_timestamp(span.ended_at),
-                format_duration(span.duration_seconds),
+                format_duration(span.duration_seconds()),
                 if span.end_uncertain {
                     " (uncertain)"
                 } else {
@@ -401,7 +401,9 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
         );
 
         if let Some(state) = active {
-            let elapsed = (OffsetDateTime::now_utc() - state.started_at).whole_seconds();
+            let elapsed = (OffsetDateTime::now_utc() - state.started_at)
+                .whole_seconds()
+                .max(0) as u64;
             println!("Active span: yes");
             println!("Started: {}", format_timestamp(state.started_at));
             println!("Elapsed: {}", format_duration(elapsed));
@@ -510,7 +512,7 @@ mod tests {
 
         let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].duration_seconds, 1800);
+        assert_eq!(spans[0].duration_seconds(), 1800);
         assert_eq!(
             spans[0].end_source,
             "system sleep signal: system entering sleep"
@@ -550,7 +552,7 @@ mod tests {
 
         let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].duration_seconds, 1800);
+        assert_eq!(spans[0].duration_seconds(), 1800);
         assert_eq!(spans[0].end_source, "startup resync: device missing");
         assert!(spans[0].end_uncertain);
         assert_eq!(spans[0].device_name.as_deref(), Some("Keychron K3"));

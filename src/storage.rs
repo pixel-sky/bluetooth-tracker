@@ -10,7 +10,6 @@ use crate::{
     storage_lock::acquire_storage_lock,
 };
 
-pub const SCHEMA_VERSION: u32 = 1;
 const MAX_NOTE_CHARS: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -45,10 +44,8 @@ pub enum BatteryOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveState {
-    pub schema_version: u32,
-    pub device_address: BluetoothAddress,
-    #[serde(default)]
     pub device_name: Option<String>,
+    pub device_address: BluetoothAddress,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
     pub start_source: String,
@@ -62,14 +59,12 @@ pub struct ActiveState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SpanRecord {
-    pub schema_version: u32,
-    pub device_address: BluetoothAddress,
     pub device_name: Option<String>,
+    pub device_address: BluetoothAddress,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub ended_at: OffsetDateTime,
-    pub duration_seconds: i64,
     pub start_source: String,
     pub end_source: String,
     pub end_uncertain: bool,
@@ -79,6 +74,12 @@ pub struct SpanRecord {
     pub end_note: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub battery_observations: Vec<BatteryObservation>,
+}
+
+impl SpanRecord {
+    pub fn duration_seconds(&self) -> u64 {
+        (self.ended_at - self.started_at).whole_seconds().max(0) as u64
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +154,6 @@ pub fn mark_connected(
     }
 
     actives.push(ActiveState {
-        schema_version: SCHEMA_VERSION,
         device_address: device.address.clone(),
         device_name: device.name.clone(),
         started_at,
@@ -197,14 +197,11 @@ pub fn mark_disconnected(
         return Ok(DisconnectOutcome::Closed(record));
     }
 
-    let duration_seconds = (ended_at - active.started_at).whole_seconds().max(0);
     let record = SpanRecord {
-        schema_version: SCHEMA_VERSION,
         device_address: device.address.clone(),
         device_name: device.name.clone().or(active.device_name),
         started_at: active.started_at,
         ended_at,
-        duration_seconds,
         start_source: active.start_source,
         end_source: source.as_ref().to_owned(),
         end_uncertain,
@@ -382,12 +379,10 @@ mod tests {
         ended_at: OffsetDateTime,
     ) -> SpanRecord {
         SpanRecord {
-            schema_version: SCHEMA_VERSION,
             device_address: device.address.clone(),
             device_name: device.name.clone(),
             started_at,
             ended_at,
-            duration_seconds: (ended_at - started_at).whole_seconds().max(0),
             start_source: "test-connect".to_owned(),
             end_source: "test-disconnect".to_owned(),
             end_uncertain: false,
@@ -395,6 +390,18 @@ mod tests {
             end_note: None,
             battery_observations: Vec::new(),
         }
+    }
+
+    #[test]
+    fn span_duration_is_never_negative() {
+        let device = device("aa:bb:cc:dd:ee:ff", None);
+        let record = completed_span(
+            &device,
+            datetime!(2026-06-28 12:10 UTC),
+            datetime!(2026-06-28 12:00 UTC),
+        );
+
+        assert_eq!(record.duration_seconds(), 0);
     }
 
     #[test]
@@ -420,10 +427,13 @@ mod tests {
             panic!("expected span closure");
         };
 
-        assert_eq!(record.duration_seconds, 600);
+        assert_eq!(record.duration_seconds(), 600);
         assert!(!record.end_uncertain);
         assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
         assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        let contents = std::fs::read_to_string(paths.spans_path())?;
+        assert!(!contents.contains("duration_seconds"));
+        assert!(!contents.contains("schema_version"));
         Ok(())
     }
 
@@ -540,6 +550,7 @@ mod tests {
         let active: ActiveState = serde_json::from_str(lines[0])?;
         assert_eq!(active.device_address, device.address);
         assert_eq!(active.start_note.as_deref(), Some("focused writing"));
+        assert!(!contents.contains("schema_version"));
         Ok(())
     }
 
@@ -769,7 +780,7 @@ mod tests {
         };
 
         assert!(record.end_uncertain);
-        assert_eq!(record.duration_seconds, 60);
+        assert_eq!(record.duration_seconds(), 60);
         Ok(())
     }
 

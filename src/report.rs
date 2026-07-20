@@ -59,7 +59,7 @@ pub fn print_report(paths: &TrackerPaths, addresses: impl AsRef<[BluetoothAddres
         println!();
         println!("Current spans:");
         for active in &actives {
-            let elapsed = (observed_at - active.started_at).whole_seconds().max(0);
+            let elapsed = (observed_at - active.started_at).whole_seconds().max(0) as u64;
             println!(
                 "{}",
                 device_label(&active.device_address, active.device_name.as_deref())
@@ -84,7 +84,7 @@ pub fn print_report(paths: &TrackerPaths, addresses: impl AsRef<[BluetoothAddres
                 device_label(&span.device_address, span.device_name.as_deref()),
                 format_timestamp(span.started_at),
                 format_timestamp(span.ended_at),
-                format_duration(span.duration_seconds),
+                format_duration(span.duration_seconds()),
                 marker
             );
             print_note("start", span.start_note.as_deref());
@@ -179,7 +179,6 @@ mod tests {
     fn battery_observations_are_flattened_in_timestamp_order() {
         let address = BluetoothAddress::new_unchecked("aa:bb:cc:dd:ee:ff");
         let active = ActiveState {
-            schema_version: 1,
             device_address: address.clone(),
             device_name: Some("Keychron K3".to_owned()),
             started_at: datetime!(2026-06-28 12:10 UTC),
@@ -193,12 +192,10 @@ mod tests {
             }],
         };
         let span = SpanRecord {
-            schema_version: 1,
             device_address: address,
             device_name: Some("Keychron K3".to_owned()),
             started_at: datetime!(2026-06-28 12:00 UTC),
             ended_at: datetime!(2026-06-28 12:10 UTC),
-            duration_seconds: 600,
             start_source: "test".to_owned(),
             end_source: "test".to_owned(),
             end_uncertain: false,
