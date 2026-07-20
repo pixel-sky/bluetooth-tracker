@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-const LOCK_FILE_NAME: &str = ".keychron-tracker.lock";
+const LOCK_FILE_NAME: &str = ".bluetooth-tracker.lock";
 
 pub(crate) struct StorageLock {
     _file: File,
@@ -72,7 +72,7 @@ mod tests {
         let temp = TempDir::new()?;
         let _lock = acquire_storage_lock(temp.path())?;
 
-        assert!(temp.path().join(LOCK_FILE_NAME).is_file());
+        assert!(temp.path().join(".bluetooth-tracker.lock").is_file());
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ use crate::{
 use anyhow::{Context, Result, anyhow};
 use std::{env, ffi::OsStr, fs, path::Path, process::Command};
 
-const SERVICE_NAME: &str = "keychron-tracker.service";
+const SERVICE_NAME: &str = "bluetooth-tracker.service";
 
 pub fn install(addresses: impl AsRef<[BluetoothAddress]>, paths: &TrackerPaths) -> Result<()> {
     let service_dir = default_user_systemd_dir()?;
@@ -22,7 +22,7 @@ pub fn install(addresses: impl AsRef<[BluetoothAddress]>, paths: &TrackerPaths) 
     run_systemctl(["--user", "enable", "--now", SERVICE_NAME])?;
 
     println!("Installed {}", service_path.display());
-    println!("Status: systemctl --user status keychron-tracker");
+    println!("Status: systemctl --user status bluetooth-tracker");
     Ok(())
 }
 
@@ -132,9 +132,9 @@ mod tests {
     use super::*;
     #[test]
     fn rendered_unit_runs_watch_with_paths_and_address() {
-        let paths = TrackerPaths::new("/tmp/keychron state");
+        let paths = TrackerPaths::new("/tmp/bluetooth state");
         let unit = render_unit(
-            Path::new("/tmp/keychron-tracker"),
+            Path::new("/tmp/bluetooth-tracker"),
             &[
                 BluetoothAddress::new_unchecked("aa:bb:cc:dd:ee:ff"),
                 BluetoothAddress::new_unchecked("11:22:33:44:55:66"),
@@ -144,7 +144,7 @@ mod tests {
         .unwrap();
 
         assert!(unit.contains(
-            "ExecStart=/tmp/keychron-tracker --state-dir \"/tmp/keychron state\" watch \
+            "ExecStart=/tmp/bluetooth-tracker --state-dir \"/tmp/bluetooth state\" watch \
              --address AA:BB:CC:DD:EE:FF"
         ));
         assert!(unit.contains("--address 11:22:33:44:55:66"));
@@ -155,9 +155,9 @@ mod tests {
 
     #[test]
     fn rendered_unit_resolves_relative_state_directory() {
-        let paths = TrackerPaths::new("relative keychron state");
-        let unit = render_unit(Path::new("/tmp/keychron-tracker"), [], &paths).unwrap();
-        let state_dir = env::current_dir().unwrap().join("relative keychron state");
+        let paths = TrackerPaths::new("relative bluetooth state");
+        let unit = render_unit(Path::new("/tmp/bluetooth-tracker"), [], &paths).unwrap();
+        let state_dir = env::current_dir().unwrap().join("relative bluetooth state");
 
         assert!(unit.contains(&format!(
             "--state-dir {} watch",
@@ -167,11 +167,11 @@ mod tests {
 
     #[test]
     fn rendered_unit_escapes_percent_in_paths() {
-        let paths = TrackerPaths::new("/tmp/keychron%state");
-        let unit = render_unit(Path::new("/tmp/keychron%tracker"), [], &paths).unwrap();
+        let paths = TrackerPaths::new("/tmp/bluetooth%state");
+        let unit = render_unit(Path::new("/tmp/bluetooth%tracker"), [], &paths).unwrap();
 
         assert!(unit.contains(
-            "ExecStart=\"/tmp/keychron%%tracker\" --state-dir \"/tmp/keychron%%state\" watch"
+            "ExecStart=\"/tmp/bluetooth%%tracker\" --state-dir \"/tmp/bluetooth%%state\" watch"
         ));
     }
 
@@ -180,8 +180,8 @@ mod tests {
     fn rendered_unit_rejects_non_utf8_arguments() {
         use std::os::unix::ffi::OsStrExt;
 
-        let paths = TrackerPaths::new("/tmp/keychron-state");
-        let exe = Path::new(OsStr::from_bytes(b"/tmp/keychron-\xfftracker"));
+        let paths = TrackerPaths::new("/tmp/bluetooth-state");
+        let exe = Path::new(OsStr::from_bytes(b"/tmp/bluetooth-\xfftracker"));
         let error = render_unit(exe, [], &paths).unwrap_err();
 
         assert_eq!(error.to_string(), "systemd argument is not valid UTF-8");

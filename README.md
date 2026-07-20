@@ -1,4 +1,4 @@
-# Bluetooth Device Tracker
+# Bluetooth Tracker
 
 Tracks Bluetooth connection spans and battery observations for explicit Bluetooth
 devices on Linux/BlueZ.
@@ -7,23 +7,23 @@ devices on Linux/BlueZ.
 
 ```sh
 cargo build --release
-./target/release/keychron-tracker discover
-./target/release/keychron-tracker service install --address AA:BB:CC:DD:EE:FF
-systemctl --user status keychron-tracker
+./target/release/bluetooth-tracker discover
+./target/release/bluetooth-tracker service install --address AA:BB:CC:DD:EE:FF
+systemctl --user status bluetooth-tracker
 ```
 
-By default, storage is under `$XDG_STATE_HOME/keychron-tracker`, or
-`~/.local/state/keychron-tracker` when `XDG_STATE_HOME` is unset. Tracked spans are
+By default, storage is under `$XDG_STATE_HOME/bluetooth-tracker`, or
+`~/.local/state/bluetooth-tracker` when `XDG_STATE_HOME` is unset. Tracked spans are
 appended to:
 
 ```text
-~/.local/state/keychron-tracker/spans.jsonl
+~/.local/state/bluetooth-tracker/spans.jsonl
 ```
 
 Active, not-yet-closed spans and device state are stored at:
 
 ```text
-~/.local/state/keychron-tracker/active.jsonl
+~/.local/state/bluetooth-tracker/active.jsonl
 ```
 
 Each non-empty line in `active.jsonl` is one currently active device span.
@@ -33,7 +33,7 @@ filenames are fixed: both `spans.jsonl` and `active.jsonl` are always stored in 
 directory and share one storage lock. For example:
 
 ```sh
-keychron-tracker --state-dir /path/to/tracker-state report
+bluetooth-tracker --state-dir /path/to/tracker-state report
 ```
 
 When installing the systemd service, a relative state directory is resolved against
@@ -42,17 +42,17 @@ the directory where `service install` is run.
 ## Commands
 
 ```sh
-keychron-tracker discover
-keychron-tracker status
-keychron-tracker status --address AA:BB:CC:DD:EE:FF
-keychron-tracker watch --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
-keychron-tracker report
-keychron-tracker report --address AA:BB:CC:DD:EE:FF
-keychron-tracker note start --address AA:BB:CC:DD:EE:FF focused writing
-keychron-tracker note end --address AA:BB:CC:DD:EE:FF coffee break
-keychron-tracker battery set 55
-keychron-tracker service install --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
-keychron-tracker service uninstall
+bluetooth-tracker discover
+bluetooth-tracker status
+bluetooth-tracker status --address AA:BB:CC:DD:EE:FF
+bluetooth-tracker watch --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
+bluetooth-tracker report
+bluetooth-tracker report --address AA:BB:CC:DD:EE:FF
+bluetooth-tracker note start --address AA:BB:CC:DD:EE:FF focused writing
+bluetooth-tracker note end --address AA:BB:CC:DD:EE:FF coffee break
+bluetooth-tracker battery set 55
+bluetooth-tracker service install --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
+bluetooth-tracker service uninstall
 ```
 
 `watch` is the long-running command used by the user-level systemd service. It listens

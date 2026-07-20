@@ -35,11 +35,11 @@ impl TrackerPaths {
 
 fn default_state_dir() -> Result<PathBuf> {
     if let Some(path) = env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(path).join("keychron-tracker"));
+        return Ok(PathBuf::from(path).join("bluetooth-tracker"));
     }
 
     let home = env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".local/state/keychron-tracker"))
+    Ok(PathBuf::from(home).join(".local/state/bluetooth-tracker"))
 }
 
 pub fn default_user_systemd_dir() -> Result<PathBuf> {
@@ -57,16 +57,16 @@ mod tests {
 
     #[test]
     fn tracker_paths_use_fixed_filenames_in_one_directory() {
-        let paths = TrackerPaths::new("/tmp/keychron state");
+        let paths = TrackerPaths::new("/tmp/bluetooth state");
 
-        assert_eq!(paths.state_dir(), Path::new("/tmp/keychron state"));
+        assert_eq!(paths.state_dir(), Path::new("/tmp/bluetooth state"));
         assert_eq!(
             paths.spans_path(),
-            Path::new("/tmp/keychron state/spans.jsonl")
+            Path::new("/tmp/bluetooth state/spans.jsonl")
         );
         assert_eq!(
             paths.actives_path(),
-            Path::new("/tmp/keychron state/active.jsonl")
+            Path::new("/tmp/bluetooth state/active.jsonl")
         );
         assert_eq!(paths.spans_path().parent(), paths.actives_path().parent());
     }

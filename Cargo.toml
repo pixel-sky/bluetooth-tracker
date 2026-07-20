@@ -1,5 +1,5 @@
 [package]
-name = "keychron-tracker"
+name = "bluetooth-tracker"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"

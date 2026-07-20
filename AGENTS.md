@@ -6,7 +6,7 @@ This is a local, single-user project maintained for the owner's personal use. Fa
 
 ## Project Structure & Module Organization
 
-This repository is a Rust 2024 binary crate named `keychron-tracker`. `src/main.rs` is the entry point, and `src/cli.rs` parses commands. Tracking logic lives in `src/tracking.rs`, BlueZ/D-Bus integration in `src/bluez.rs`, service helpers in `src/service.rs`, persistence in `src/storage*.rs`, and reporting/display code in `src/report.rs` and `src/display.rs`. Tests are embedded as module tests in `src/*.rs`.
+This repository is a Rust 2024 binary crate named `bluetooth-tracker`. `src/main.rs` is the entry point, and `src/cli.rs` parses commands. Tracking logic lives in `src/tracking.rs`, BlueZ/D-Bus integration in `src/bluez.rs`, service helpers in `src/service.rs`, persistence in `src/storage*.rs`, and reporting/display code in `src/report.rs` and `src/display.rs`. Tests are embedded as module tests in `src/*.rs`.
 
 ## Build, Test, and Development Commands
 
@@ -41,7 +41,7 @@ Add focused unit tests next to the code they exercise inside `#[cfg(test)] mod t
 
 ## Commit & Pull Request Guidelines
 
-Keep commit messages simple and descriptive enough to explain the change. Pull requests should include a clear summary, test results such as `cargo test`, and any operational impact for BlueZ, systemd user services, or state files under `~/.local/state/keychron-tracker/`.
+Keep commit messages simple and descriptive enough to explain the change. Pull requests should include a clear summary, test results such as `cargo test`, and any operational impact for BlueZ, systemd user services, or state files under `~/.local/state/bluetooth-tracker/`.
 
 ## Security & Configuration Tips
 
@@ -49,4 +49,4 @@ Do not commit generated state files, Bluetooth addresses from private environmen
 
 ## Data & Schema Changes
 
-State is JSONL under `~/.local/state/keychron-tracker/`. Because this is a local personal project, schema changes do not need migrations or backward compatibility unless explicitly requested. It is acceptable to clear or manually adjust local state when the schema changes.
+State is JSONL under `~/.local/state/bluetooth-tracker/`. Because this is a local personal project, schema changes do not need migrations or backward compatibility unless explicitly requested. It is acceptable to clear or manually adjust local state when the schema changes.

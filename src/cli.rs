@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "keychron-tracker")]
+#[command(name = "bluetooth-tracker")]
 #[command(about = "Track Bluetooth connection spans and battery levels for configured devices")]
 pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn battery_set_parses_address_and_percentage() {
         let cli = Cli::try_parse_from([
-            "keychron-tracker",
+            "bluetooth-tracker",
             "battery",
             "set",
             "--address",
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn battery_set_parses_percentage_without_address() {
-        let cli = Cli::try_parse_from(["keychron-tracker", "battery", "set", "55"]).unwrap();
+        let cli = Cli::try_parse_from(["bluetooth-tracker", "battery", "set", "55"]).unwrap();
 
         let Commands::Battery {
             command:
@@ -143,7 +143,7 @@ mod tests {
     fn battery_set_rejects_percentage_above_one_hundred() {
         assert!(
             Cli::try_parse_from([
-                "keychron-tracker",
+                "bluetooth-tracker",
                 "battery",
                 "set",
                 "--address",
