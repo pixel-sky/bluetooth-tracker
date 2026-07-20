@@ -308,6 +308,13 @@ pub fn set_span_note(
     note: impl AsRef<str>,
 ) -> Result<NoteOutcome> {
     let note = normalize_note(note)?;
+    let set_note_field = |start_note: &mut Option<String>,
+                          end_note: &mut Option<String>,
+                          boundary: SpanBoundary,
+                          note: String| match boundary {
+        SpanBoundary::Start => *start_note = Some(note),
+        SpanBoundary::End => *end_note = Some(note),
+    };
     let actives_path = paths.actives_path();
     let spans_path = paths.spans_path();
     let _lock = acquire_storage_lock(paths.state_dir())?;
@@ -345,18 +352,6 @@ pub fn set_span_note(
             "no active or completed spans for {address} to annotate"
         )),
         None => Err(anyhow!("no active or completed spans to annotate")),
-    }
-}
-
-fn set_note_field(
-    start_note: &mut Option<String>,
-    end_note: &mut Option<String>,
-    boundary: SpanBoundary,
-    note: String,
-) {
-    match boundary {
-        SpanBoundary::Start => *start_note = Some(note),
-        SpanBoundary::End => *end_note = Some(note),
     }
 }
 
