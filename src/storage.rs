@@ -317,31 +317,41 @@ pub fn set_span_note(
     let _lock = acquire_storage_lock(paths.state_dir())?;
 
     let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
-    if let Some(active) = match address {
-        Some(addr) => actives
-            .iter_mut()
-            .rev()
-            .find(|active| active.device_address == *addr),
-        None => actives.last_mut(),
-    } {
-        let address = active.device_address.clone();
+    let active_index = match address {
+        Some(address) => actives
+            .iter()
+            .position(|active| active.device_address == *address),
+        None if actives.len() == 1 => Some(0),
+        None if actives.len() > 1 => {
+            return Err(anyhow!(
+                "multiple active spans; specify an address to add a note"
+            ));
+        }
+        None => None,
+    };
+
+    if let Some(index) = active_index {
+        let active = &mut actives[index];
+        let selected_address = active.device_address.clone();
         set_note_field(&mut active.start_note, &mut active.end_note, boundary, note);
         write_jsonl_unlocked(actives_path, actives)?;
-        return Ok(NoteOutcome::ActiveSpan(address));
+        return Ok(NoteOutcome::ActiveSpan(selected_address));
     }
 
     let mut spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
-    if let Some(span) = match address {
-        Some(addr) => spans
-            .iter_mut()
-            .rev()
-            .find(|span| span.device_address == *addr),
-        None => spans.last_mut(),
-    } {
-        let address = span.device_address.clone();
+    let span_index = match address {
+        Some(address) => spans
+            .iter()
+            .rposition(|span| span.device_address == *address),
+        None => spans.len().checked_sub(1),
+    };
+
+    if let Some(index) = span_index {
+        let span = &mut spans[index];
+        let selected_address = span.device_address.clone();
         set_note_field(&mut span.start_note, &mut span.end_note, boundary, note);
         write_jsonl_unlocked(spans_path, &spans)?;
-        return Ok(NoteOutcome::LatestSpan(address));
+        return Ok(NoteOutcome::LatestSpan(selected_address));
     }
 
     match address {
@@ -633,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn note_without_address_uses_latest_available_span() -> Result<()> {
+    fn note_without_address_uses_only_active_device_or_latest_completed_span() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
         let device = device("aa:bb:cc:dd:ee:ff", None);
@@ -663,6 +673,31 @@ mod tests {
         let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
         assert_eq!(spans[0].start_note.as_deref(), Some("active note"));
         assert_eq!(spans[0].end_note.as_deref(), Some("completed note"));
+        Ok(())
+    }
+
+    #[test]
+    fn note_without_address_rejects_multiple_active_devices() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = paths(&temp);
+        let first = device("aa:bb:cc:dd:ee:ff", None);
+        let second = device("11:22:33:44:55:66", None);
+        mark_connected(
+            &paths,
+            &first,
+            datetime!(2026-06-28 12:00 UTC),
+            "first-connect",
+        )?;
+        mark_connected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:01 UTC),
+            "second-connect",
+        )?;
+
+        assert!(set_span_note(&paths, None, SpanBoundary::Start, "wrong").is_err());
+        let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
+        assert!(actives.iter().all(|active| active.start_note.is_none()));
         Ok(())
     }
 
