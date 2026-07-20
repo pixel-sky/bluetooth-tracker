@@ -53,6 +53,15 @@ bluetooth-tracker note end --address AA:BB:CC:DD:EE:FF coffee break
 bluetooth-tracker battery set 55
 bluetooth-tracker service install --address AA:BB:CC:DD:EE:FF --address 11:22:33:44:55:66
 bluetooth-tracker service uninstall
+bluetooth-tracker completions <SHELL>
+```
+
+Completion scripts can be generated for `bash`, `elvish`, `fish`, `powershell`, or
+`zsh`. For example, to install Fish completions, write the generated script to
+Fish's completions directory:
+
+```fish
+bluetooth-tracker completions fish > ~/.config/fish/completions/bluetooth-tracker.fish
 ```
 
 `watch` is the long-running command used by the user-level systemd service. It listens

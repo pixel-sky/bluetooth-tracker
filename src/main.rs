@@ -13,7 +13,8 @@ mod storage_lock;
 mod tracking;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 use cli::{BatteryCommands, Cli, Commands, NoteCommands, ServiceCommands};
 use paths::TrackerPaths;
 use storage::SpanBoundary;
@@ -49,5 +50,14 @@ async fn main() -> Result<()> {
             ServiceCommands::Install { address } => service::install(&address, &paths),
             ServiceCommands::Uninstall => service::uninstall(),
         },
+        Commands::Completions { shell } => {
+            generate(
+                shell,
+                &mut Cli::command(),
+                "bluetooth-tracker",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
     }
 }

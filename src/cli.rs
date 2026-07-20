@@ -1,5 +1,6 @@
 use crate::address::BluetoothAddress;
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -45,6 +46,12 @@ pub enum Commands {
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }
 
@@ -152,5 +159,20 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn completions_parses_supported_shell() {
+        let cli = Cli::try_parse_from(["bluetooth-tracker", "completions", "zsh"]).unwrap();
+
+        let Commands::Completions { shell } = cli.command else {
+            panic!("expected completions command");
+        };
+        assert_eq!(shell, Shell::Zsh);
+    }
+
+    #[test]
+    fn completions_rejects_unsupported_shell() {
+        assert!(Cli::try_parse_from(["bluetooth-tracker", "completions", "nushell"]).is_err());
     }
 }
