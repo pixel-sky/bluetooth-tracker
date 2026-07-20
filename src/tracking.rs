@@ -390,8 +390,8 @@ pub async fn status(paths: TrackerPaths, addresses: Vec<BluetoothAddress>) -> Re
             })
             .unwrap_or("");
 
-        println!("Address: {}", address);
         println!("Name: {}", name);
+        println!("Address: {}", address);
         println!(
             "Connected: {}",
             device
