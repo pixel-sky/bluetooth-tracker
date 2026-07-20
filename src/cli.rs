@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[command(name = "bluetooth-tracker")]
 #[command(about = "Track Bluetooth connection spans and battery levels for configured devices")]
 pub struct Cli {
+    /// Use a custom directory for tracker state files
     #[arg(long, global = true, value_name = "PATH")]
     pub state_dir: Option<PathBuf>,
 
@@ -16,33 +17,43 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
+    /// Discover nearby Bluetooth devices
     Discover,
 
+    /// Track connection and battery changes
     Watch {
+        /// Bluetooth address to track; may be repeated
         #[arg(long, required = true)]
         address: Vec<BluetoothAddress>,
     },
 
+    /// Show the current state of tracked devices
     Status {
+        /// Limit output to this Bluetooth address; may be repeated
         #[arg(long)]
         address: Vec<BluetoothAddress>,
     },
 
+    /// Report connection spans and battery observations
     Report {
+        /// Limit output to this Bluetooth address; may be repeated
         #[arg(long)]
         address: Vec<BluetoothAddress>,
     },
 
+    /// Add notes to connection spans
     Note {
         #[command(subcommand)]
         command: NoteCommands,
     },
 
+    /// Record battery percentages manually
     Battery {
         #[command(subcommand)]
         command: BatteryCommands,
     },
 
+    /// Manage the user-level systemd service
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
@@ -57,10 +68,13 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum BatteryCommands {
+    /// Record a battery percentage
     Set {
+        /// Bluetooth address of the span to update
         #[arg(long)]
         address: Option<BluetoothAddress>,
 
+        /// Battery percentage from 0 to 100
         #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
         percentage: u8,
     },
@@ -68,18 +82,24 @@ pub enum BatteryCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum NoteCommands {
+    /// Add a note to the start of a span
     Start {
+        /// Bluetooth address of the span to update
         #[arg(long)]
         address: Option<BluetoothAddress>,
 
+        /// Words to store in the note
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
 
+    /// Add a note to the end of a span
     End {
+        /// Bluetooth address of the span to update
         #[arg(long)]
         address: Option<BluetoothAddress>,
 
+        /// Words to store in the note
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -87,11 +107,14 @@ pub enum NoteCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum ServiceCommands {
+    /// Install and start the tracker service
     Install {
+        /// Bluetooth address to track; may be repeated
         #[arg(long, required = true)]
         address: Vec<BluetoothAddress>,
     },
 
+    /// Stop and remove the tracker service
     Uninstall,
 }
 
