@@ -1,11 +1,16 @@
 use crate::storage_lock::acquire_storage_lock;
+#[cfg(target_os = "linux")]
+use crate::storage_lock::{STATE_DIR_MODE, STATE_FILE_MODE};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
 };
+
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
 pub fn read_jsonl<D>(path: impl AsRef<Path>) -> Result<Vec<D>>
 where
@@ -62,7 +67,12 @@ where
 
 fn ensure_parent_dir(path: impl AsRef<Path>) -> Result<()> {
     if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent)
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(target_os = "linux")]
+        builder.mode(STATE_DIR_MODE);
+        builder
+            .create(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     Ok(())
@@ -86,8 +96,16 @@ pub(crate) fn write_jsonl_unlocked<S: Serialize>(
     ensure_parent_dir(path)?;
     let temp_path = temp_path(path)?;
     {
-        let mut file = File::create(&temp_path)
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(target_os = "linux")]
+        options.mode(STATE_FILE_MODE);
+        let mut file = options
+            .open(&temp_path)
             .with_context(|| format!("failed to open {}", temp_path.display()))?;
+        #[cfg(target_os = "linux")]
+        file.set_permissions(fs::Permissions::from_mode(STATE_FILE_MODE))
+            .with_context(|| format!("failed to set permissions on {}", temp_path.display()))?;
         for entry in entries.as_ref() {
             serde_json::to_writer(&mut file, entry)
                 .with_context(|| format!("failed to write {}", temp_path.display()))?;
@@ -107,4 +125,41 @@ pub(crate) fn write_jsonl_unlocked<S: Serialize>(
     })?;
 
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn mode(path: impl AsRef<Path>) -> Result<u32> {
+        Ok(fs::metadata(path)?.permissions().mode() & 0o777)
+    }
+
+    #[test]
+    fn write_creates_private_directory_and_file() -> Result<()> {
+        let temp = TempDir::new()?;
+        let state_dir = temp.path().join("state");
+        let path = state_dir.join("active.jsonl");
+
+        write_jsonl_unlocked(&path, ["entry"])?;
+
+        assert_eq!(mode(state_dir)?, 0o700);
+        assert_eq!(mode(path)?, 0o600);
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_replaces_file_with_private_permissions() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("active.jsonl");
+        let temp_path = temp_path(&path)?;
+        fs::write(&temp_path, "stale")?;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o644))?;
+
+        write_jsonl_unlocked(&path, ["entry"])?;
+
+        assert_eq!(mode(path)?, 0o600);
+        Ok(())
+    }
 }

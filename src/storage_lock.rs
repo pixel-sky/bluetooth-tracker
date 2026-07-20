@@ -4,7 +4,14 @@ use std::{
     path::Path,
 };
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
 const LOCK_FILE_NAME: &str = ".bluetooth-tracker.lock";
+#[cfg(target_os = "linux")]
+pub(crate) const STATE_DIR_MODE: u32 = 0o700;
+#[cfg(target_os = "linux")]
+pub(crate) const STATE_FILE_MODE: u32 = 0o600;
 
 pub(crate) struct StorageLock {
     _file: File,
@@ -20,11 +27,11 @@ pub(crate) fn acquire_storage_lock(state_dir: impl AsRef<Path>) -> Result<Storag
 fn open_and_lock(lock_path: impl AsRef<Path>) -> Result<File> {
     let lock_path = lock_path.as_ref();
     ensure_parent_dir(lock_path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(target_os = "linux")]
+    options.mode(STATE_FILE_MODE);
+    let file = options
         .open(lock_path)
         .with_context(|| format!("failed to open {}", lock_path.display()))?;
     lock_file(&file).with_context(|| format!("failed to lock {}", lock_path.display()))?;
@@ -33,7 +40,12 @@ fn open_and_lock(lock_path: impl AsRef<Path>) -> Result<File> {
 
 fn ensure_parent_dir(path: impl AsRef<Path>) -> Result<()> {
     if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent)
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(target_os = "linux")]
+        builder.mode(STATE_DIR_MODE);
+        builder
+            .create(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     Ok(())
@@ -65,14 +77,23 @@ fn lock_file(_file: &File) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[test]
     fn storage_lock_is_created_in_the_storage_directory() -> Result<()> {
         let temp = TempDir::new()?;
-        let _lock = acquire_storage_lock(temp.path())?;
+        let state_dir = temp.path().join("state");
+        let _lock = acquire_storage_lock(&state_dir)?;
+        let lock_path = state_dir.join(".bluetooth-tracker.lock");
 
-        assert!(temp.path().join(".bluetooth-tracker.lock").is_file());
+        assert!(lock_path.is_file());
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(fs::metadata(state_dir)?.permissions().mode() & 0o777, 0o700);
+            assert_eq!(fs::metadata(lock_path)?.permissions().mode() & 0o777, 0o600);
+        }
         Ok(())
     }
 }
