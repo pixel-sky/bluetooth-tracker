@@ -85,7 +85,7 @@ impl SpanRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectOutcome {
     Started,
-    AlreadyActive,
+    AlreadyActive(ActiveState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,26 +138,42 @@ pub fn mark_connected(
     source: impl AsRef<str>,
 ) -> Result<ConnectOutcome> {
     let actives_path = paths.actives_path();
+    let spans_path = paths.spans_path();
+    let source = source.as_ref();
+
     let _lock = acquire_storage_lock(paths.state_dir())?;
 
+    let mut outcome = ConnectOutcome::Started;
     let mut actives = read_jsonl_unlocked::<ActiveState>(&actives_path)?;
-    if let Some(index) = actives
+    if let Some(active) = actives
         .iter()
         .position(|active| active.device_address == device.address)
+        .map(|i| actives.remove(i))
     {
-        let spans = read_jsonl_unlocked::<SpanRecord>(paths.spans_path())?;
-        if completed_span_for_active(&spans, &actives[index]).is_some() {
-            actives.remove(index);
-        } else {
-            return Ok(ConnectOutcome::AlreadyActive);
+        let mut spans = read_jsonl_unlocked::<SpanRecord>(&spans_path)?;
+        if completed_span_for_active(&spans, &active).is_none() {
+            outcome = ConnectOutcome::AlreadyActive(active.clone());
+            spans.push(SpanRecord {
+                device_address: device.address.clone(),
+                device_name: device.name.clone().or(active.device_name),
+                started_at: active.started_at,
+                ended_at: started_at,
+                start_source: active.start_source,
+                end_source: source.to_owned(),
+                end_uncertain: true,
+                start_note: active.start_note,
+                end_note: active.end_note,
+                battery_observations: active.battery_observations,
+            });
+            write_jsonl_unlocked(spans_path, spans)?;
         }
-    }
+    };
 
     actives.push(ActiveState {
         device_address: device.address.clone(),
         device_name: device.name.clone(),
         started_at,
-        start_source: source.as_ref().to_owned(),
+        start_source: source.to_owned(),
         start_note: None,
         end_note: None,
         battery_observations: Vec::new(),
@@ -165,7 +181,7 @@ pub fn mark_connected(
 
     write_jsonl_unlocked(actives_path, actives)?;
 
-    Ok(ConnectOutcome::Started)
+    Ok(outcome)
 }
 
 pub fn mark_disconnected(
@@ -416,21 +432,25 @@ mod tests {
     }
 
     #[test]
-    fn connected_then_disconnected_writes_one_span() -> Result<()> {
+    fn repeated_connection_closes_previous_span_as_uncertain_and_starts_new_one() -> Result<()> {
         let temp = TempDir::new()?;
         let paths = paths(&temp);
         let device = device("aa:bb:cc:dd:ee:ff", Some("Keychron K3".to_owned()));
         let started_at = datetime!(2026-06-28 12:00 UTC);
+        let restarted_at = datetime!(2026-06-28 12:05 UTC);
         let ended_at = datetime!(2026-06-28 12:10 UTC);
 
         assert_eq!(
-            mark_connected(&paths, &device, started_at, "test-connect")?,
+            mark_connected(&paths, &device, started_at, "first-connect")?,
             ConnectOutcome::Started
         );
-        assert_eq!(
-            mark_connected(&paths, &device, started_at, "test-connect")?,
-            ConnectOutcome::AlreadyActive
-        );
+        let ConnectOutcome::AlreadyActive(active) =
+            mark_connected(&paths, &device, restarted_at, "second-connect")?
+        else {
+            panic!("expected existing active span");
+        };
+        assert_eq!(active.started_at, started_at);
+        assert_eq!(active.start_source, "first-connect");
 
         let DisconnectOutcome::Closed(record) =
             mark_disconnected(&paths, &device, ended_at, "test-disconnect", false)?
@@ -438,10 +458,18 @@ mod tests {
             panic!("expected span closure");
         };
 
-        assert_eq!(record.duration_seconds(), 600);
+        assert_eq!(record.started_at, restarted_at);
+        assert_eq!(record.duration_seconds(), 300);
         assert!(!record.end_uncertain);
         assert!(read_jsonl::<ActiveState>(paths.actives_path())?.is_empty());
-        assert_eq!(read_jsonl::<SpanRecord>(paths.spans_path())?, vec![record]);
+        let spans = read_jsonl::<SpanRecord>(paths.spans_path())?;
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].started_at, started_at);
+        assert_eq!(spans[0].ended_at, restarted_at);
+        assert_eq!(spans[0].start_source, "first-connect");
+        assert_eq!(spans[0].end_source, "second-connect");
+        assert!(spans[0].end_uncertain);
+        assert_eq!(spans[1], record);
         let contents = std::fs::read_to_string(paths.spans_path())?;
         assert!(!contents.contains("duration_seconds"));
         assert!(!contents.contains("schema_version"));
@@ -689,12 +717,15 @@ mod tests {
             datetime!(2026-06-28 12:00 UTC),
             "first-connect",
         )?;
-        mark_connected(
-            &paths,
-            &second,
-            datetime!(2026-06-28 12:01 UTC),
-            "second-connect",
-        )?;
+        assert_eq!(
+            mark_connected(
+                &paths,
+                &second,
+                datetime!(2026-06-28 12:01 UTC),
+                "second-connect",
+            )?,
+            ConnectOutcome::Started
+        );
 
         assert!(set_span_note(&paths, None, SpanBoundary::Start, "wrong").is_err());
         let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
@@ -833,15 +864,12 @@ mod tests {
             datetime!(2026-06-28 12:00 UTC),
             "first-connect",
         )?;
-        assert_eq!(
-            mark_connected(
-                &paths,
-                &second,
-                datetime!(2026-06-28 12:01 UTC),
-                "second-connect",
-            )?,
-            ConnectOutcome::Started
-        );
+        mark_connected(
+            &paths,
+            &second,
+            datetime!(2026-06-28 12:01 UTC),
+            "second-connect",
+        )?;
 
         let actives = read_jsonl::<ActiveState>(paths.actives_path())?;
         assert!(

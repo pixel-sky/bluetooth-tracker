@@ -52,7 +52,12 @@ fn apply_observed_state(
                 source,
                 format_timestamp(observed_at)
             ),
-            ConnectOutcome::AlreadyActive => {}
+            ConnectOutcome::AlreadyActive(active) => println!(
+                "Already connected {} since {} via {}",
+                device_label(device),
+                format_timestamp(active.started_at),
+                active.start_source
+            ),
         }
     } else {
         match mark_disconnected(
